@@ -30,51 +30,65 @@ workstation, so the links below are the authority.
 These paths establish behavior to preserve. They do not establish that old TLS defaults,
 fixed reconnect delays, or UI-thread cache mutation are appropriate for the new client.
 
-## Rune
+## GPUI Kit and GPUI
 
-Reviewed commit: `f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`.
-It is pinned in the workspace and has built, rendered headless scenes, and presented a
-native window. Broader platform qualification remains part of M0 and M3.
+The front end is built with GPUI Kit. The versions below are what `Cargo.lock` holds and
+what `cargo tree -p xenadmin-desktop` links on Linux; all come from the crates.io registry,
+and the lock file records each one's checksum.
 
-- [Core documentation](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune/README.md)
-  describes frame updates, background requests, Linux dependencies, native dialogs,
-  accessibility, and deterministic headless tools.
-- [Component documentation](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune-kit/README.md)
-  describes virtualized trees and tables and the desktop shell.
-- [Core manifest](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune/Cargo.toml)
-  enables desktop backends and the AccessKit Unix adapter.
+`gpui-kit` is pinned at exactly `0.9.1` (`gpui-kit = "=0.9.1"` in the workspace manifest;
+published 2026-11-09). Its default features are `component` and `assets`. `gpui-fast`,
+`tree-sitter`, `syntect`, `speech` and `decimal` stay off; the lock file lists the
+`gpui-fast` crates (0.1.15) because the Kit names them as an optional dependency, and
+nothing links them. The Kit depends on the GPUI crates at exactly `0.3.12`.
 
-The core README's old "Differences from PLAN.md" paragraph contradicts its newer
-accessibility and scrolling sections. The manifest and current modules support the newer
-description. Verify behavior in M0 and M3 rather than relying on either paragraph alone.
-The documented incoming Wayland file-drag gap requires a working file picker for imports.
+| Crate | Version | What it is |
+| --- | --- | --- |
+| [`gpui-kit`](https://crates.io/crates/gpui-kit/0.9.1) | 0.9.1 | The facade. Application code reaches GPUI as `gpui_kit::*` ([repository](https://github.com/longbridge/gpui-kit)) |
+| [`gpui-component`](https://crates.io/crates/gpui-component/0.9.1), `gpui-component-macros` | 0.9.1 | The Kit's component library and its macros |
+| [`gpui-base`](https://crates.io/crates/gpui-base/0.9.1) | 0.9.1 | A crate of the Kit beneath the facade |
+| [`gpui-kit-assets`](https://crates.io/crates/gpui-kit-assets/0.9.1) | 0.9.1 | The Kit's bundled assets (icons) |
+| [`gpui-pre`](https://crates.io/crates/gpui-pre/0.3.12) | 0.3.12 | The GPUI snapshot. `Keystroke` carries modifiers, key and key_char, and no physical key code |
+| [`gpui-pre-linux`](https://crates.io/crates/gpui-pre-linux/0.3.12) | 0.3.12 | The Wayland and X11 backend. Its public crate root exports `current_platform` and `linux_platform`, and no `current_headless_renderer` (the scene tool takes the headless renderer from the Kit's `platform` module) |
+| [`gpui-pre-wgpu`](https://crates.io/crates/gpui-pre-wgpu/0.3.12) | 0.3.12 | The renderer, on `wgpu` 30.0.1 |
+| `gpui-pre-platform`, `-macros`, `-collections`, `-refineable`, `-derive-refineable`, `-scheduler`, `-shared-string`, `-sum-tree`, `-util`, `-http-client`, `-ztracing`, `-ztracing-macro` | 0.3.12 | The rest of the GPUI snapshot that the three above bring |
 
-## GPUI Kit
+Beside them the front end links `accesskit` 0.24.1 with `accesskit_unix` 0.22.1 and
+`accesskit_atspi_common` 0.19.1 (the accessibility tree and its AT-SPI adapter),
+`ashpd` 0.13.13 (desktop portals), `cosmic-text` 0.19.0 (text), `wayland-client` 0.31.15
+and `xkbcommon` 0.8.0.
 
-Reviewed for the front-end spike, not as a replacement for the Rune pin above.
-`gpui-kit` is pinned at exactly `0.9.1` (published 2026-11-09). Its default
-features are `component` and `assets`. `gpui-fast`, `tree-sitter`, `syntect`,
-`speech` and `decimal` stay off. The Kit depends on `gpui-pre`, `gpui-pre-linux`
-and `gpui-pre-wgpu` at exactly `0.3.12`.
+What was reviewed and what was not. The Kit's and GPUI's published sources at these
+versions were read for the [migration plan](GPUI-MIGRATION.md), and the spike reports
+(`reports/2026-11-14-gpui-spike-s0.md` to `-s5.md`) record what the pin did and did not
+show. Since then the pin has built the client, passed the front end's tests on the Kit's
+headless test platform, rendered every scene off screen, and carried the headless runs
+against the lab of 2026-11-19 ([report](reports/2026-11-19-gpui-live-headless.md)). It has
+not presented the client's window on a compositor. The one piece of this pin shown on a
+real seat is the spike's second Wayland keyboard listener, on Hyprland 0.56.2
+([decision 0006](decisions/0006-console-key-codes.md)), where GPUI also delivered no
+pointer events to the probe and fullscreen and the clipboard were not shown. No notice
+review of the GPUI crates beyond the collector's run (`scripts/collect-notices.py`, which
+copies each package's licence files and supplies a standard text where a package ships
+none) has been done.
 
-- [GPUI Kit 0.9.1](https://github.com/longbridge/gpui-kit) is the facade.
-  Application code reaches GPUI as `gpui_kit::*`.
-- [gpui-pre 0.3.12](https://crates.io/crates/gpui-pre/0.3.12) is the GPUI snapshot.
-  `Keystroke` carries modifiers, key and key_char, and no physical key code.
-- [gpui-pre-linux 0.3.12](https://crates.io/crates/gpui-pre-linux/0.3.12) is the
-  Wayland and X11 backend. Its public crate root exports `current_platform` and
-  `linux_platform`. It does not export `current_headless_renderer`.
+A Kit upgrade is a reviewed change of its own: update the pin, this table and the lock
+file together, and re-run the checks.
 
-The spike reports record what that pin did and did not establish. Rune remains
-the reviewed front end of the released binary.
+### Rune (history)
 
-Live-lab finding: the pinned revision keeps a scroll viewport's children in the viewport's
-content space, and AccessKit's AT-SPI adapter (`accesskit_unix` 0.24.1,
-`accesskit_atspi_common` 0.21.1) re-evaluates clipping only for nodes whose own data
-changed, so children clipped out and then back in by a resize or scroll stay listed but
-unregistered on the bus. See finding 6 of the
-[live qualification report](reports/2026-11-09-lab-qualification.md). Resolving it needs a
-change in one of the two upstreams or a reviewed fork.
+Every release up to 0.19.0 was built with Rune at commit
+`f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`
+([core documentation](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune/README.md),
+[component documentation](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune-kit/README.md)).
+The crate and the pin were removed at the cutover and nothing in the workspace depends on
+Rune any more (`scripts/check.sh` fails if something does). The live-lab finding about its
+accessibility tree (children of a scroll viewport that stay listed but unregistered on the
+AT-SPI bus after a resize or scroll, finding 6 of the
+[live qualification report](reports/2026-11-09-lab-qualification.md), with
+`accesskit_unix` 0.24.1 of that build) belongs to that front end; whether the GPUI Kit
+front end's tree behaves on the bus was not examined, because no AT-SPI client and no
+screen reader has been run against it.
 
 ## Host APIs
 
@@ -96,13 +110,15 @@ change in one of the two upstreams or a reviewed fork.
 
 ## Decisions requiring runtime evidence
 
-The alpha pins Rust 1.99.1 and the Rune revision above, and uses the vendored `vnc-rs` 0.6.0
+The workspace pins Rust 1.99.1 and the Kit version above (the alpha pinned the Rune
+revision named above), and uses the vendored `vnc-rs` 0.6.0
 through a custom stream-based CONNECT adapter
 ([console adapter decision](decisions/0003-console-protocol-adapter.md)). On the XCP-ng
 8.3.0 lab the adapter delivered guest and control-domain frames through the authenticated
 tunnel and carried keyboard input, as keysyms from the harness and as physical keys sent
-as QEMU extended key events from the desktop, and pointer position and buttons that a guest
-read back exactly; JSON-RPC login, coordinator redirects and the `event.from` bootstrap run
+as QEMU extended key events from the desktop (the Rune desktop of that time; the GPUI Kit
+front end's keys have reached a lab guest only through the Kit's test key events, headless),
+and pointer position and buttons that a guest read back exactly; JSON-RPC login, coordinator redirects and the `event.from` bootstrap run
 against those hosts in every live scenario. Non-US layouts, guest framebuffer resize, cursor
 shapes, the wheel's direction and clipboard negotiation against a real guest remain
 unqualified. The decoder is still handwritten, on top of generated record views. The

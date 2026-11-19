@@ -4,10 +4,14 @@
 
 The sections below define the target architecture. The initial implementation lives in
 the three Cargo workspace members listed below; its current public facade is compiled
-Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
+Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types. This baseline
+describes the alpha of 2026-11-07, whose interface was built with the Rune toolkit; the
+front end is now GPUI Kit ("Deployment and ownership" below), and the file names of the
+alpha's desktop crate in this section are history.
 
 - `Backend::connect(ConnectionOptions, Credentials)` returns a `Connection` immediately.
-  `watch()` and `latest()` expose immutable snapshots, while `notify_on_change()` wakes Rune.
+  `watch()` and `latest()` expose immutable snapshots, while `notify_on_change()` wakes the
+  interface.
 - A snapshot mints `ObservedVm` only for current inventory. Its private fields bind the VM
   to its pool and a process-wide unique connection generation. `submit(id, VmCommand)` and
   `open_console()` require observations and recheck freshness. `ObservedSnapshot` additionally
@@ -25,7 +29,9 @@ Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
   ([decision](decisions/0004-generated-bindings.md)). The full device graph remains
   planned.
 - `console.rs` owns an authenticated CONNECT stream, `vnc-rs` decoding, latest RGBA frames,
-  and bounded ordered input. `console_view.rs` maps Rune events and presents `Pixels`.
+  and bounded ordered input. In the alpha `console_view.rs` of the Rune desktop mapped the
+  toolkit's events and presented the frame; the console canvas of the GPUI Kit front end
+  does that now ("Console and metrics adapters").
 - The alpha has no metrics worker, bulk transfers, keyring storage, or multi-object workflows.
   Malformed event batches fail atomically and require reconnect; automatic resynchronization
   of that fault, remembered-member failover, and backoff jitter remain to be implemented.
@@ -39,14 +45,15 @@ alpha limitations above are historical rather than a description of every curren
 
 ## Deployment and ownership
 
-Ship one Linux executable. Rune owns the main thread and its windows. A background Tokio
-runtime runs the application core. The core connects directly to XAPI, console endpoints,
-RRD endpoints, and later bulk-transfer endpoints. No local HTTP server or resident daemon
-is required. The core has no Rune dependency.
+Ship one Linux executable. GPUI, through GPUI Kit, owns the main thread and its windows. A
+background Tokio runtime runs the application core. The core connects directly to XAPI,
+console endpoints, RRD endpoints, and later bulk-transfer endpoints. No local HTTP server
+or resident daemon is required. The core and the interface's model have no dependency on a
+UI toolkit; `scripts/check.sh` fails if the model gains one.
 
 ```mermaid
 flowchart LR
-    Desktop[Rune desktop] -->|Commands| Core[Application core]
+    Desktop[GPUI Kit desktop and its model] -->|Commands| Core[Application core]
     Core -->|Versioned snapshots and operation records| Desktop
     Core --> Pool[One owner per pool]
     Pool <-->|RPC and event.from| XAPI[XCP-ng XAPI]
@@ -63,23 +70,26 @@ Keep these workspace boundaries small:
 | Location | Owns |
 | --- | --- |
 | `crates/xenadmin-core` | Public application types and facade. Private modules for pool ownership, XAPI, operations, console, metrics, and local persistence |
-| `crates/xenadmin-desktop` | Rune views, UI state, snapshot adaptation, frame presentation, physical input, and desktop integration |
-| `crates/xenadmin-ui` | The toolkit-free model of the interface that replaces the Rune one: selection and scope, navigation rows, the tab matrix, the command table and eligibility, editors and reviews, scenes, preferences. It describes what it shows as plain data and depends on no UI toolkit |
-| `crates/xenadmin-gpui` | The GPUI Kit front end, built beside the Rune one until cutover: the application start, the main window and its shell, the generic renderer of the model's descriptions, the console and chart views, and the scene tool |
+| `crates/xenadmin-ui` | The toolkit-free model of the interface: selection and scope, navigation rows, the tab matrix, the command table and eligibility, editors and reviews, scenes, preferences, snapshot adaptation. It describes what it shows as plain data and depends on no UI toolkit |
+| `crates/xenadmin-desktop` | The GPUI Kit front end: the application start, the main window and its shell (menu bar, toolbar, navigation pane, tabs, status bar), the generic renderer of the model's descriptions, the console canvas with physical input, the chart element, desktop integration, the client binary `xenadmin-rs` and the headless scene tool `xenadmin-scenes` |
+| `crates/xenadmin-xapi` | Record views, enumerations and the catalogue generated from the upstream API description; the one crate under the LGPL |
+| `crates/xenadmin-process` | The post-fork helper of the offline image sandbox |
 | `tools/host-probe` | CLI consumer of the core for protocol qualification and lab acceptance |
 | `crates/xenadmin-core/tests` | Local controllable HTTP, TLS, and RFB protocol fixtures |
 
-The front end is being moved from Rune to GPUI Kit; the
-[migration plan](GPUI-MIGRATION.md) owns the sequence, the target layout and the rules,
-and `crates/xenadmin-desktop` stays the released front end until its cutover. Between the
-two new crates the ownership is:
+The front end was moved from Rune to GPUI Kit; the
+[migration plan](GPUI-MIGRATION.md) owns the sequence, the target layout and the rules, and
+its "Status" section says what of the new front end is established (nothing of it has run
+in a real window yet). Until the cutover `crates/xenadmin-desktop` was the Rune front end
+and the GPUI one was `crates/xenadmin-gpui`; the Rune crate is removed and the GPUI crate
+has taken its name. Between the model and the front end the ownership is:
 
 - `xenadmin-ui` owns everything except drawing. `Model` is the one state of the
   interface; a front end is its only writer, through one store. Its methods return without
   waiting for a host, and it writes to disk only when the process owns the state
   directory. What it cannot do itself (a file chooser, a URL, the clipboard, a console
   window, quitting) it asks the front end for as an intent.
-- `xenadmin-gpui` owns widget state only: scroll offsets, focus, text buffers, which tree
+- `xenadmin-desktop` owns widget state only: scroll offsets, focus, text buffers, which tree
   rows are folded, widths while they are dragged. GPUI and Kit types do not leave it, and
   it reaches GPUI only through the `gpui_kit` facade. It never blocks on a future: the
   core's waker reaches the store through a channel that collapses a burst into one poll,
@@ -101,11 +111,16 @@ selection, capability checks, task tracking, and reconnect policy.
 backend = Backend::start(local_services)
 connection = backend.connect(saved_profile)
 subscription = connection.watch()
-desktop_adapter.attach(subscription, rune_waker)
+desktop_adapter.attach(subscription, interface_waker)
 ```
 
-The adapter receives immutable snapshots in background work, wakes Rune, and replaces UI
-state on the main thread. It never blocks a Rune callback waiting for a host.
+The adapter receives immutable snapshots in background work, wakes the interface, and
+replaces UI state on the main thread. It never blocks a callback of the toolkit waiting for
+a host. In the GPUI Kit front end the waker is `bridge.rs`: the core calls it from its own
+threads, a burst collapses into one message on a channel the foreground awaits, and the
+one store (`store.rs`, the only writer of the model) then polls the model and notifies its
+observers. Nothing polls per frame and no code of the front end blocks on a future
+(`scripts/check.sh` refuses `block_on` in its sources).
 
 ```text
 request_id = OperationId::new()
@@ -288,18 +303,31 @@ This is a host console tunnel, not the generic HTTP-proxy CONNECT destination fo
 Do not assume an HTTP client exposes this upgrade correctly. Qualify the stream in M0.
 
 The RFB component owns decoding, cursor updates, resize negotiation, pointer conversion,
-and key negotiation. The desktop adapter alone converts frames into Rune `Pixels` updates.
+and key negotiation. The desktop adapter alone turns frames into something drawn: the
+console canvas (`crates/xenadmin-desktop/src/console/canvas.rs`) uploads the session's latest
+RGBA frame as a GPUI image once per frame generation and paints it letterboxed or one to
+one. Console frames have a waker of their own, so a new frame redraws the canvas and not
+the shell. The canvas sends pointer and keys through the model's `canvas` functions; keys
+come by evdev code from a second keyboard listener on the Wayland display
+([decision 0006](decisions/0006-console-key-codes.md)), which has not yet run with a
+console on a real seat.
 Use a console-specific generation so replacing a console cannot display delayed old frames.
 Reconnect after location/reference changes and release held input on focus loss and closure.
 The initial path uses bounded RGBA uploads. Zero-copy GPU integration needs later evidence.
 
-`console_windows.rs` registers eight lazy secondary Rune windows on the existing event loop.
-Detaching moves the console handle/frame state and clones the original `Connection`; secondary
-initialization never opens another backend, profile store or keyring session. Each window owns
-its input/recovery state and polls only the local connection snapshot, while frame notifications
-wake it directly. Main selection changes never replace its connection. Window slots use unique
-leases and a close-acknowledgement barrier before reuse, so old manager/dialog callbacks cannot
-affect a new console. Closing releases input and drops the stream; main closure closes all slots.
+Up to eight consoles can be detached into windows of their own. The model owns the eight
+slots and what each window shows (`crates/xenadmin-ui/src/areas/console/`);
+`crates/xenadmin-desktop/src/console/windows.rs` opens one OS window per slot on the
+application's event loop when the model asks, and tells the model when a window is gone.
+Detaching moves the console's handle and frame state to the window's slot; a
+console window never opens another backend, profile store or keyring session, and there is
+one model for all windows. Each window has its own canvas and input state, and frame
+notifications wake it directly. Main selection changes never replace its connection. Window
+slots use unique leases, which the close report carries, so a late report about an old
+window cannot affect a new console in the same slot. Closing releases input and drops the
+stream; closing the main window closes all slots. (In the Rune front end this was
+`console_windows.rs`, with eight lazily registered secondary windows.) Opening, focus
+between real windows and fullscreen are established on the Kit's test platform only.
 
 RRD polling has independent scheduling and bounds. Stop unnecessary high-resolution polling
 for hidden views. Show unavailable samples as gaps. Management controls remain available
@@ -365,7 +393,7 @@ cannot migrate/write profiles, preferences or the operation journal.
 
 Profile document version 2 adds explicit per-profile `auto_connect`, valid only with Secret
 Service credential mode. Version 1 documents default it to false. Startup queues opted-in
-profiles once, after the Rune waker is installed. Bulk connection and startup restoration share
+profiles once, after the interface's waker is installed. Bulk connection and startup restoration share
 a four-slot credential queue. Each lookup carries its own attempt UUID and saved profile;
 completion validates both before connecting. Editor loads also compare the current form.
 Changing or removing a profile, cancelling its attempt, or disconnecting all invalidates late
@@ -381,7 +409,7 @@ publishing Ready after fallback. Concurrent pools have independent owners.
 
 Optional inventory classes carry explicit unavailable/permission/invalid states. Missing
 metrics never become zero-valued samples. Typed UUID relationships join VDI/VBD, VIF/network,
-PIF/bond/VLAN and PBD/SR/host records without exposing opaque session references to Rune.
+PIF/bond/VLAN and PBD/SR/host records without exposing opaque session references to the interface.
 A bounded diagnostic request reads current VM state and asks XAPI to validate a power action;
 this is advisory and never substitutes for server enforcement during the actual action.
 
@@ -901,7 +929,7 @@ The shared settings adapter separates read-only argument preparation from mutati
 so the final journal CAS immediately precedes the only setter call. Positive replies are
 persisted before value verification; recovery inspects only submitted work and never sends
 remaining setters. Public steps are bound to private labels and verification receipts, and
-late evidence preserves recovery/acknowledgement fences. The Rune review names unchanged
+late evidence preserves recovery/acknowledgement fences. The review names unchanged
 selected targets separately from its exact changed command. See the
 [bulk properties report](reports/2026-11-08-bulk-properties.md).
 
@@ -918,8 +946,8 @@ unknown configuration separately from an absent override. See the
 Failure guidance is a static, bounded XAPI-code projection. It cannot grant eligibility or
 change operation state. Task rows use typed error codes; historical operation rows accept
 only exact application-owned error envelopes, with failed-step fallback. Arbitrary messages
-and administrative block text are never searched for code substrings. Informational Rune
-modals capture public operation/task identity and retain outcome uncertainty before advice.
+and administrative block text are never searched for code substrings. Informational
+surfaces of the interface capture public operation/task identity and retain outcome uncertainty before advice.
 
 Static IPv6 management bond/VLAN changes use an explicit five-stage protocol through an
 independently configured temporary management component. Each operation submits at most one

@@ -9,6 +9,16 @@ disposable nested lab are recorded in the
 [lab/ACCEPTANCE.md](../lab/ACCEPTANCE.md). Fixture success does not establish host
 compatibility, and a passed scenario does not establish its failure or interruption paths.
 
+The front end was moved from the Rune toolkit to GPUI Kit
+([migration plan](GPUI-MIGRATION.md)). Every desktop result recorded before 2026-11-19 (the
+driven desktop sessions, the packaged AppImage runs, the operator's sessions on a real
+seat, the clean-install report) was obtained with the Rune interface. For the GPUI Kit
+front end the recorded evidence is: its model's tests, its window tests on the Kit's
+headless test platform, a render of every scene, and the headless runs against the lab of
+2026-11-19 ([report](reports/2026-11-19-gpui-live-headless.md)). It has not run in a real
+window, with a screen reader, or from a packaged build; the gate reports of 2026-11-19
+(`reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) give each criterion's state.
+
 The [verification traceability report](reports/2026-11-11-verification-traceability.md)
 maps each core scenario below, the console qualification list and the outage acceptance run
 to the fixture tests and live scenarios that cover them, and names what is still uncovered.
@@ -26,9 +36,15 @@ in committed reports.
 2. A controllable protocol server exercises request encoding, decoding, timeouts, redirects,
    event continuation, response loss, task polling, and malformed data. Assert behavior at
    the application facade rather than private helper structure.
-3. Rune headless scenes cover realistic inventory, loading/stale/empty states, action
-   availability, errors, operation history, and keyboard navigation. Use stable element keys
-   and inspect tree semantics as well as pixels.
+3. The interface has three headless layers. Model tests (`cargo test -p xenadmin-ui`)
+   cover selection, tabs, command eligibility with its reasons, editors, reviews and
+   refusals without any window. Window tests (`cargo test -p xenadmin-desktop --features
+   scenes`) drive the GPUI Kit front end with real pointer, key and text events on the
+   Kit's headless test platform. Scene renders (the scene tool `xenadmin-scenes`, run for
+   every scene by `scripts/check.sh`) cover realistic inventory, loading/stale/empty
+   states, action availability, errors and operation history as a PNG and an element tree.
+   Use stable element keys and inspect tree semantics as well as pixels. The test platform
+   has no compositor, no seat, no clipboard of the system and no portal.
 4. Real desktop sessions verify Wayland and X11 windows, input, scale, clipboard, file
    dialogs, AT-SPI/Orca, and the software renderer. Headless output cannot establish these.
 5. A designated disposable XCP-ng lab verifies direct connections, actual task semantics,
@@ -133,7 +149,8 @@ qualify a host workflow. Real tests require a designated disposable environment 
 exact host versions and permitted actions. Never substitute a production pool for this gate.
 
 The ordinary check script also runs the vendored RFB wire tests and isolated fake Secret
-Service fixtures. It renders only synthetic scenes. User-provided screenshots and private
+Service fixtures. It renders only synthetic scenes, into `artifacts/ui/`, which CI keeps
+as the artifact `ui`. User-provided screenshots and private
 inventories must not appear in artifacts, fixtures, reports or releases.
 
 ## Live lab scenarios
@@ -165,8 +182,32 @@ for motion, buttons and the wheel. Virtual keyboard tools with their own keymap 
 produce valid QEMU scancodes, and the compositor's own button dispatcher delivers a click at
 a window's corner rather than at the pointer. Guest-side proof comes from the guest: have it
 capture its own input devices and report the bytes to a listener on the isolated bridge.
-Rune headless screenshots never substitute for these runs, and a nested compositor still
-does not establish real seat, clipboard or Orca behaviour.
+Headless output of the GPUI Kit front end (scene renders, tests on the Kit's test platform,
+and the headless runs of the shell against the lab) never substitutes for these runs, and a
+nested compositor still does not establish real seat, clipboard or Orca behaviour. The
+driven sessions recorded so far were of the Rune interface; the harness's element lookups
+were written for that interface's accessibility tree and have not been run against the
+GPUI Kit front end, whose driven session is still to be done (gate G3 of the
+[migration plan](GPUI-MIGRATION.md)).
+
+`crates/xenadmin-desktop/tests/lab_live.rs` holds ignored tests that run the front end
+itself against the lab without a window: the application as `app::start` wires it (the
+real core, store, shell and console windows) on the Kit's headless platform, acting
+through presses, typing and commands on the elements a user has, with a PNG and an element
+tree of every step written beside the lab's other evidence, outside the repository. Run
+one at a time, on an empty temporary state directory:
+
+```sh
+XENADMIN_LAB_MANIFEST=/var/lib/libvirt/images/xenadmin-rs-lab/lab.json \
+XENADMIN_LAB_PASSWORD_FILE=/path/to/lab-root-password \
+XENADMIN_STATE_DIR="$(mktemp -d)" \
+cargo test -p xenadmin-desktop --features scenes --locked --test lab_live -- \
+  --ignored --exact lab_g2_add_server_and_follow_the_host --nocapture --test-threads=1
+```
+
+This is live-host evidence of the model, the shell and the core working together, and of
+what the renderer drew. It is not evidence of a window: no compositor, seat, clipboard,
+portal or screen reader takes part, and the released binary is not what runs.
 
 A private D-Bus session bus isolates a throwaway Secret Service provider from the operator's
 own keyring, but it shares the user's runtime directory: a keyring daemon and an
