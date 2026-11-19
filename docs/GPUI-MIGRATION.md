@@ -4,10 +4,17 @@ Nov 13, 2026 · @Brendan Hiley
 
 ## Status
 
-Written on 2026-11-19, after the cutover of the code. The plan below is kept as it was written on
-2026-11-13 and is not updated: where it says `crates/xenadmin-gpui`, "the Rune binary" or "until
-cutover", it describes the time before this status. The [ledger](GPUI-MIGRATION-LEDGER.md) records
-where the port differs from it.
+Written on 2026-11-19, after the cutover of the code, and brought up to date the same day after the
+first runs of the client in windows (in virtual machines) and the merge of that day's branches. The
+plan below is kept as it was written on 2026-11-13 and is not updated: where it says
+`crates/xenadmin-gpui`, "the Rune binary" or "until cutover", it describes the time before this
+status. The [ledger](GPUI-MIGRATION-LEDGER.md) records where the port differs from it.
+
+The words are used strictly. *Fixtures* and *headless*: tests on the Kit's test platform and scene
+renders, no window. *Live, headless*: the real shell and core against the lab, no window. *In a
+virtual machine*: the packaged client in a real window, inside a QEMU machine that showed nothing on
+the workstation, drawn by a software renderer, with input injected by a script and nobody at it.
+None of these is a person at a desk.
 
 Done:
 
@@ -15,58 +22,91 @@ Done:
   the GPUI Kit front end is `crates/xenadmin-desktop` (it was `crates/xenadmin-gpui`) and builds the
   client `xenadmin-rs` and the scene tool `xenadmin-scenes`; the Rune crate and its dependencies are
   removed. 238 commands; 129 of the 129 scenes; each of the 371 tests of the old front end has its
-  disposition in the ledger (154 moved, 118 ported, 94 split, 4 retired, 1 open).
+  disposition in the ledger (154 moved, 119 ported, 94 split, 4 retired, none open).
 - Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
-  Kit's headless test platform, and a render of every scene by `./scripts/check.sh`.
-- Verified live, headless, on the lab on 2026-11-19: the supported areas, by the ignored tests of
-  `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a window
-  ([report](reports/2026-11-19-gpui-live-headless.md)). They were first run at commit `e2d4572` and
-  were all repeated, passing, after the last round of fixes and the cutover, at commit `56fedbd`.
-  The paths they leave out are listed in the [G3 report](reports/2026-11-19-gpui-gate-g3.md),
-  criterion 2.
+  Kit's headless test platform, and a render of every scene by `./scripts/check.sh`
+  (@@CHECK_STATUS@@). A state directory of the released client (0.19 and 0.17) is read by the new one
+  without loss, by an ignored test run on copies ([report](reports/2026-11-19-gpui-upgrade-state.md)).
+- Verified live, headless, on the lab on 2026-11-19, by the ignored tests of
+  `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a window:
+  the successful paths of the supported areas ([report](reports/2026-11-19-gpui-live-headless.md)),
+  and their refusals, interruptions and recoveries: reboot, suspend and the force actions, a batch
+  that stops, refused reviews, migration with disks and its cancellation, a halted disk move, a
+  snapshot with memory, the console's second window and typed clipboard, a member's toolstack
+  restart, reboot and shutdown through maintenance, and recovery after a restart of the
+  coordinator's toolstack, a lost member and a certificate that is not the pinned one
+  ([report](reports/2026-11-19-gpui-live-paths.md)). @@LIVE_STATUS@@
+- Verified in virtual machines on 2026-11-19, with the archive and the AppImage that CI built at
+  commit `e808a2f`, software rendering, nobody at them:
+  - a clean installation on Ubuntu 24.04 and on Arch: checksums, installer, the window opened under
+    a Wayland compositor that had no seat and, on Ubuntu, in an X session with scripted input, the
+    probe reading the lab with no route to the internet, uninstall
+    ([report](reports/2026-11-19-gpui-clean-install.md));
+  - a driven session in a Wayland session (sway 1.12 on the machine's own display, keys and pointer
+    injected at the machine's devices): connection to the lab with pinned certificates, the recovery
+    gate of `README.md`, tables, search, a guest's console through the Wayland key-code path of
+    [decision 0006](decisions/0006-console-key-codes.md) (route A), a host's console, the clipboard
+    with the window focused, the portal's file chooser, a console in a separate window, fullscreen,
+    server-side decorations, and the client on the accessibility bus with Orca writing names and
+    roles for the demo's views ([report](reports/2026-11-19-gpui-vm-session.md)).
+- Defects those runs and the review of the cutover found, fixed in the tree and in no package yet: a
+  second start that showed nothing; a held key that did not repeat in a console; a start without a
+  display, a font, a seat or a Vulkan driver that panicked or never ended; the option "Reduce
+  animation" that did nothing; a toolkit guard of the check script that could not fire. The two
+  first were confirmed in the virtual machine with builds of their fixes, on sway only.
 - The documents of "Repository and documentation changes", the gate reports and the ledger's final
   pass.
 
 Not established, and to be said wherever the front end's status is given:
 
-- Nothing ran in a real window on a compositor. The Wayland key path for console key codes
-  ([decision 0006](decisions/0006-console-key-codes.md), route A) only compiles in the client;
-  clipboard, the portal file chooser, window activation by a second start, fullscreen and client-side
-  decorations are established on the test platform only.
-- No screen reader run.
-- No packaged build of the new front end has been installed or run (an archive was built once to
-  check the packaging script; no AppImage), none on a clean system, and the recovery gate of
-  `README.md` was not repeated with one.
-- Connection recovery through a lost host, a toolstack restart or a coordinator change was not rerun
-  through the new front end.
+- No person has used the client in a window. Nothing was drawn by a hardware GPU. The only
+  compositor it has run on is sway 1.12 (and a seatless Sway for the clean installation): not
+  Hyprland, which is the operator's, not GNOME, not KDE. On X11 the window opened once, without a
+  console; the keystroke fallback of the console has not run in a window.
+- The Wayland key path (route A) has run with injected keys on sway only: no real keyboard, no
+  input method, no compose key. Clipboard without focus, the cursor over a console, pointer motion
+  inside a guest and pixel-exact fit and actual size were not examined.
+- No person has used a screen reader with it, and nobody heard one: Orca's output was read from its
+  log, for the demo's views.
+- No keyring: a saved password and connection at startup have not been tried with the new front end.
+- No package holds the fixes above, and the tree as merged is not pushed: CI has built `e808a2f`
+  only. The corrected package lists of the installation guide were not installed alone on an
+  untouched image.
+- The recovery gate has not been run on a release artifact (there is none), nor by a person.
+- Live, still missing: a coordinator change and maintenance of the coordinator through the front
+  end, the host's own refusal of an evacuation, an operation in flight during a toolstack restart.
 - The experimental areas were verified on fixtures and by rendering only; their live qualification of
   earlier dates was obtained through the Rune interface or through the core's own lab scenarios.
 
-Gates. No gate is called passed unless every one of its criteria is met.
+Gates. No gate is called passed unless every one of its criteria is met. Where a criterion is met by
+the run in a virtual machine, the gate report argues in a sentence why its words are satisfied; the
+operator may hold that a person's run is needed and say so.
 
 | Gate | State | Report |
 | --- | --- | --- |
-| G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
+| G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted. The session in a virtual machine added to several of those limits; none is closed for a real seat | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
-| G2 | Not passed. Criteria 2, 3 and 4 met; 1 partly (the connection to the lab was shown headless, not by the built client in a window); 5 partly (a test and the construction, no review of the scenes) | [G2](reports/2026-11-19-gpui-gate-g2.md) |
-| G3 | Not passed. Criterion 2 partly met, headless; 4 partly met (one test row open); 1 (the recovery gate with the packaged AppImage) and 3 (a driven desktop session) not met; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
+| G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer); 5 partly: the review is made as a test, and it finds 18 actions outside a row of commands, recorded with their reasons | [G2](reports/2026-11-19-gpui-gate-g2.md) |
+| G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
-| G5 | Not passed. Criterion 1 met (`./scripts/check.sh` passes, no `rune` crate); 2 (the packaged recovery gate) and 3 (CI builds the packages) not met | [G5](reports/2026-11-19-gpui-gate-g5.md) |
+| G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
 
 What remains, and is the operator's:
 
-1. A run of the packaged build in a real window, with the recovery gate of `README.md` (with Xen
-   Orchestra shut down: locate the XO VM, start it, use its console). It is also the first run of the
-   client on a compositor.
-2. The driven desktop session (nested compositor, AT-SPI, physical key injection), whose harness
-   needs its element lookups rewritten for the new tree.
-3. The clean-install check on Arch and Ubuntu 24.04 with the archive and the AppImage, after a first
-   CI run of the changed workflows.
-4. The release, with its version (decision D10), its report and its tag.
-5. The repository description on GitHub ("with Rune UI").
+1. Push the merged tree, so that CI builds packages that hold the fixes of 2026-11-19.
+2. A run of a package at a desk: a person, a hardware GPU, the operator's compositor, with the
+   recovery gate of `README.md` (with Xen Orchestra shut down: locate the XO VM, start it, use its
+   console) and a console typed into with a real keyboard. The findings of the runs in virtual
+   machines that need a decision are listed in their reports.
+3. The word on the 18 actions that stay outside a row of commands (gate G2, criterion 5), and on
+   whether the criteria met in a virtual machine are accepted as met.
+4. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
+   coordinator handover, and a keyring.
+5. The release, with its version (decision D10), its report and its tag.
+6. The repository description on GitHub ("with Rune UI"), the main branch and the old pull requests.
 
-A screen reader run is what would allow the accessibility statement to change (decision D11); until
-one is recorded it stays "not supported".
+A screen reader run by a person is what would allow the accessibility statement to change (decision
+D11); until one is recorded it stays "not supported".
 
 ## Summary
 
