@@ -3,12 +3,13 @@
 //!
 //! Rune keys kept: `snapshots-table` (rows keyed by the snapshot UUID),
 //! `snapshot-tree-toggle`, `snapshot-selection-count`,
-//! `snapshot-batch-export-open`, `snapshot-name`, `snapshot-description`,
+//! `snapshot-name`, `snapshot-description`,
 //! `snapshot-clone-name`, `snapshot-capture-option`, `restore-shutdown`,
 //! `restore-start`, `snapshot-delete-disks`, `cancel-snapshot`,
 //! `confirm-snapshot`, `snapshot-preview-load`, `snapshot-preview-image`.
 //! The Rune buttons of the page are commands now and are found by their
-//! command ids.
+//! command ids; `snapshot-batch-export-open` is the command
+//! `snapshot.export` of `bulk_export`.
 //!
 //! New keys, for elements Rune left without one: `snapshots-help`,
 //! `snapshots-status`, `snapshots-restore-note`, `snapshots-unavailable`,
@@ -96,48 +97,21 @@ pub fn tab(m: &Model, tab: TabId, scope: &Target) -> Option<TabBody> {
         status(m, pool),
         (guest.power_state != PowerState::Halted)
             .then(|| caption(commands::RESTORE_STATE).key("snapshots-restore-note")),
-        actions(blocks_of_buttons(m, pool, &chosen, a.tree)),
+        actions(blocks_of_buttons(a.tree)),
         list,
         selection,
         outcomes(m, &inventory, pool, vm),
     ]))
 }
 
-/// The view toggle and the way into the export of the selection.
-fn blocks_of_buttons(m: &Model, pool: PoolId, chosen: &[&Snapshot], tree: bool) -> Vec<Button> {
-    let toggle = button(
+/// The view toggle. The export of the selection is `bulk_export`'s command
+/// `snapshot.export`, in the tab's row of local actions.
+fn blocks_of_buttons(tree: bool) -> Vec<Button> {
+    vec![button(
         "snapshot-tree-toggle",
         if tree { "Show list" } else { "Show ancestry" },
         edit::toggle_tree,
-    );
-    let mut buttons = vec![toggle];
-    buttons.extend(export(m, pool, chosen));
-    buttons
-}
-
-/// "Export selection…": `bulk_export`'s command on the selected snapshots.
-/// Absent while that command is hidden, disabled with its reason.
-fn export(m: &Model, pool: PoolId, chosen: &[&Snapshot]) -> Option<Button> {
-    let target = Target::many(
-        chosen
-            .iter()
-            .map(|snapshot| ObjectRef::snapshot(pool, snapshot.id)),
-    );
-    let reason = match m.eligibility(commands::EXPORT, &target) {
-        Eligibility::Hidden => return None,
-        Eligibility::Disabled(reason) => Some(reason),
-        Eligibility::Enabled => None,
-    };
-    Some(
-        button(
-            "snapshot-batch-export-open",
-            "Export selection…",
-            move |m| {
-                m.invoke(commands::EXPORT, &target);
-            },
-        )
-        .disabled_opt(reason),
-    )
+    )]
 }
 
 /// The one line above the list that says why nothing can be changed.

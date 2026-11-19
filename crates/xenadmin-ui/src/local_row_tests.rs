@@ -403,7 +403,7 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     ]),
     (T::Snapshots, K::Vm, &[
         "vm.snapshot", "snapshot.revert", "snapshot.properties", "snapshot.new-vm",
-        "snapshot.new-template", "snapshot.delete",
+        "snapshot.new-template", "snapshot.export", "snapshot.delete",
     ]),
     (T::General, K::Template, &[
         "template.properties",

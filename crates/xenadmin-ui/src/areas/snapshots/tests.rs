@@ -798,13 +798,13 @@ fn a_snapshot_handed_over_through_the_grid_is_the_selected_row_until_one_is_chos
 /// Was `the_export_button_waits_for_the_command_of_bulk_export`: the command
 /// `snapshot.export` of `bulk_export` is registered now.
 #[test]
-fn the_export_button_opens_the_export_of_the_selected_snapshots() {
-    // Nothing selected: the button is there and says what to select.
+fn the_export_of_the_selected_snapshots_is_a_command_of_the_local_row() {
+    // Nothing selected: the command is there and says what to select.
     let mut h = Harness::scene("snapshots");
     h.select_rows(TABLE, &[]);
     assert!(h.find("snapshot-tree-toggle").is_some());
     assert_eq!(
-        h.try_click("snapshot-batch-export-open"),
+        h.try_click(commands::EXPORT.0),
         Err("Select 1–32 snapshots of this VM".into())
     );
     assert!(h.surfaces().is_empty());
@@ -814,8 +814,15 @@ fn the_export_button_opens_the_export_of_the_selected_snapshots() {
         h.model.eligibility(commands::EXPORT, &h.model.target()),
         Eligibility::Enabled
     );
-    assert_eq!(h.node("snapshot-batch-export-open").label.as_deref(), Some("Export selection…"));
-    h.click("snapshot-batch-export-open");
+    let item = h
+        .local_row()
+        .into_iter()
+        .find(|item| item.id == commands::EXPORT)
+        .expect("the export is in the local row");
+    assert_eq!(item.label, "Export selection…");
+    // The body of the tab has no button of its own for it.
+    assert!(h.find("snapshot-batch-export-open").is_none());
+    h.click(commands::EXPORT.0);
     assert_eq!(h.surface().id, "transfer-dialog");
     // Several: the batch wizard of `bulk_export`, on exactly those rows.
     let mut h = selected();
@@ -823,7 +830,7 @@ fn the_export_button_opens_the_export_of_the_selected_snapshots() {
         TABLE,
         &[&snapshot(FIRST).to_string(), &snapshot(SECOND).to_string()],
     );
-    h.click("snapshot-batch-export-open");
+    h.click(commands::EXPORT.0);
     let surface = h.surface();
     assert_eq!(surface.id, "batch-export");
     assert!(surface.experimental);
