@@ -12,7 +12,7 @@ use common::Step::*;
 use common::{SMALL, WIDE, close, on, open_scene, run_step};
 use xenadmin_desktop::kit::testing::{TestAppContext, TestQueryExt as _};
 use xenadmin_desktop::kit::*;
-use xenadmin_desktop::scene_view::{TAB_RESULTS_KEY, TAB_SCROLL_KEY};
+use xenadmin_desktop::scene_view::{LOCAL_ROW_KEY, TAB_RESULTS_KEY, TAB_SCROLL_KEY};
 use xenadmin_desktop::scenes::ShellWindow;
 
 const SEARCH: &str = "search-results";
@@ -140,7 +140,20 @@ fn a_short_table_is_as_high_as_its_rows_and_stays_the_same_element_when_a_row_is
     cx: &mut TestAppContext,
 ) {
     const TABLE: &str = "snapshots-table";
-    let scene = open_scene(cx, "snapshots", SMALL);
+    // The smallest height, at a width where the row of local actions is one
+    // line in the font of the test platform, which is wider than the
+    // client's. The row has seven commands since "Export selection…" joined
+    // it; in the client's font they fit in 800 (the scene tool draws the row
+    // 41 high at 800 by 600, and there the table moves by 5). Where the row
+    // wraps, the part above the table gives way at this height and a
+    // selection then moves the table by what it gave: this test is about
+    // the body that fits.
+    const SIZE: (f32, f32) = (960., SMALL.1);
+    let scene = open_scene(cx, "snapshots", SIZE);
+    assert!(
+        bounds(cx, &scene, LOCAL_ROW_KEY).size.height < px(48.),
+        "the row of local actions is one line"
+    );
     // Three snapshots: the table needs no half of the body, and all of it
     // is in the window under what stands above it.
     let (above, results) = (
