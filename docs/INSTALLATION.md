@@ -9,9 +9,10 @@ parts are supported and which are experimental.
 ## Runtime requirements
 
 Use a Linux desktop with Vulkan (hardware or Mesa software), libxcb, libxkbcommon,
-libxkbcommon-x11, libwayland-client and fontconfig. The client is linked against libxcb,
-libxkbcommon and libxkbcommon-x11 and does not start without them, in a Wayland session
-either; the packages bundle no desktop or graphics library. Python 3.11 or newer is
+libxkbcommon-x11, libwayland-client and one of the fonts named below. The client is linked
+against libxcb, libxkbcommon and libxkbcommon-x11 and does not start without them, in a
+Wayland session either, not even to print its version; the packages bundle no desktop or
+graphics library and no interface font. Python 3.11 or newer is
 required only for the optional installer. Native file selection uses the desktop portal; stored passwords
 use the session's Secret Service provider. A missing keyring leaves manual credentials
 available. GPU drivers and desktop libraries are supplied by the operating system.
@@ -19,27 +20,35 @@ available. GPU drivers and desktop libraries are supplied by the operating syste
 Ubuntu 24.04 is the build baseline in CI. A build made on a newer distribution can require
 its newer glibc; wrapping that build in an AppImage does not lower its runtime requirements.
 
-The packages of 0.19.0 and earlier, which carry the Rune interface, were installed and
-started on untouched Ubuntu 24.04 and Arch images with only a handful of packages added
-([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-11-clean-install.md)).
-That check has not been repeated for the GPUI Kit front end of the version in development:
-no package of it has been installed or run anywhere yet, and no AppImage of it has been
-built. The lists below are therefore expected, not confirmed: they are that report's lists
-with the xcb library the new client is linked against added.
+The packages CI built of the GPUI Kit front end were installed and started on untouched
+Ubuntu 24.04 and Arch images with only these packages added
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)):
 
 ```sh
 # Ubuntu 24.04
-sudo apt-get install libvulkan1 mesa-vulkan-drivers libwayland-client0 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1
+sudo apt-get install libvulkan1 mesa-vulkan-drivers libwayland-client0 libxcb1 libxkbcommon0 libxkbcommon-x11-0 fonts-dejavu-core
 # Arch
-sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxcb libxkbcommon libxkbcommon-x11 fontconfig
+sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxcb libxkbcommon libxkbcommon-x11 ttf-dejavu
 ```
 
+The client draws its text with a font of the system and looks for one of these families by
+name: Helvetica, Segoe UI, Ubuntu, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans, Arial.
+A desktop installation has one; a minimal system may have none, and then the client stops
+at once and says that no usable font is installed. Another family that fontconfig would
+substitute (Liberation Sans, FreeSans) does not serve. The fontconfig library is not
+needed.
+
 `mesa-vulkan-drivers` and `vulkan-swrast` supply the software Vulkan driver, which is
-enough on a machine with no GPU; a hardware driver replaces it where there is one. What
-the new client does without any Vulkan driver has not been tried. The client of 0.19.0 and
-earlier has been used as a Wayland application, and an X session without Wayland has had a
-scripted check only; the new front end has not yet run in a real window in either. Screen
-readers are not supported and multi-monitor use is unverified.
+enough on a machine with no GPU; a hardware driver replaces it where there is one. Without
+any Vulkan driver the client says that its main window did not open and ends, and where
+Mesa's OpenGL is installed it uses that instead. Started where no display is named, or
+where the named one cannot be reached, it says so in one line and ends. The packages CI
+built before 2026-11-19 do not yet have these messages: the report lists what they do in
+each case. The window
+has been opened in a compositor without a seat and, with scripted input, in an X session
+without Wayland, both in a virtual machine with software rendering; nobody has used the
+new front end in a window yet, on either. Screen readers are not supported and
+multi-monitor use is unverified.
 
 ## Portable archive
 
@@ -81,7 +90,7 @@ starts or closes a client automatically.
 ## AppImage
 
 Mark the downloaded image executable and run it. FUSE mounting is optional; environments
-without working FUSE can run `./xenadmin-rs-VERSION-linux-x86_64.AppImage
+without working FUSE (the image says that it found no `fusermount`) can run `./xenadmin-rs-VERSION-linux-x86_64.AppImage
 --appimage-extract-and-run`. The image accepts the application's normal arguments.
 `--probe` runs the bundled read-only host probe. For optional desktop integration:
 
