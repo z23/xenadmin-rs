@@ -3560,6 +3560,21 @@ fn lab_p3_migration_cancelled() {
     assert!(placed(&mut client, vm, Some(coordinator.0), home.0));
     wait_guest_ready(&mut client, vm, &mut evidence);
     let away_before = disks_on(&outside, away.0);
+    let away_disks: Vec<String> = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .details
+        .vdis
+        .values()
+        .filter(|vdi| vdi.sr == Some(away.0))
+        .map(|vdi| vdi.name.clone())
+        .collect();
+    evidence.step(
+        "the destination repository before",
+        json!({ "repository": away.1, "disks": away_disks }),
+    );
     migration_to_review(
         &mut client,
         &mut evidence,
@@ -3572,37 +3587,77 @@ fn lab_p3_migration_cancelled() {
     .expect("the wizard reaches its review");
     let started = std::time::Instant::now();
     let operation = apply_migration(&mut client, &mut evidence, vm, "to-cancel");
-    // Let the host begin the copy, then ask for the cancellation.
-    client.pass(Duration::from_secs(4));
+    // Let the host begin the copy. How often the record of the migration
+    // changes while it runs is sampled: the review of a cancellation is
+    // bound to the record as it was when the review opened.
+    let revision = |client: &mut Client| {
+        client.model(|m| {
+            m.operation_rows
+                .iter()
+                .find(|record| record.id == operation)
+                .map(|record| record.revision())
+        })
+    };
+    let mut changes = Vec::new();
+    let mut last = revision(&mut client);
+    let sampling = std::time::Instant::now();
+    while sampling.elapsed() < Duration::from_secs(4) {
+        client.pass(Duration::from_millis(60));
+        let now = revision(&mut client);
+        if now != last {
+            changes.push((seconds(sampling.elapsed()) * 100.).round() / 100.);
+            last = now;
+        }
+    }
+    evidence.step(
+        "the record of the running migration changed at these seconds",
+        json!(changes),
+    );
+    evidence.note("record_changes_in_four_seconds", json!(changes.len()));
     let review = format!("recovery-cancel-{operation}");
     let direct = format!("operation-cancel-{operation}");
-    let how = if client.element(&review).is_some() {
-        client.press(&review);
-        assert_eq!(client.front().as_deref(), Some("vm-recovery"));
-        client.snap(&mut evidence, "cancellation-review");
-        client.press("recovery-confirm");
-        if client.front().is_some() {
-            client.press("recovery-close");
+    // A review that the record's progress overtook refuses its
+    // confirmation; it is closed and opened again, as its text says.
+    let mut overtaken = Vec::new();
+    let how = loop {
+        if operation_record(&mut client, operation).0.terminal() {
+            break "the migration ended before a cancellation could be confirmed";
         }
-        "Review cancellation request… on the General tab, confirmed"
-    } else if client.element(&direct).is_some() {
-        client.press(&direct);
-        "Request cancellation on the General tab"
-    } else {
-        client.nav_view(NavView::Notifications);
-        client.tab(TabId::Events);
-        client.press("activity-History");
-        let row = history_row(&mut client, operation).expect("the Events tab has the migration");
-        client.press(&row.0);
-        client
-            .try_local("events.request-cancel")
-            .expect("Request cancellation for the running migration");
-        if client.front().is_some() {
-            client.snap(&mut evidence, "cancellation-review");
-            client.press("recovery-confirm");
+        if client.element(&review).is_some() {
+            client.press(&review);
+            assert_eq!(client.front().as_deref(), Some("vm-recovery"));
+            match client.try_press("recovery-confirm") {
+                Ok(()) => {
+                    if client.front().is_some() {
+                        client.press("recovery-close");
+                    }
+                    break "Review cancellation request… on the General tab, confirmed";
+                }
+                Err(reason) => {
+                    if overtaken.is_empty() {
+                        client.snap(&mut evidence, "cancellation-review-overtaken");
+                    }
+                    overtaken.push(reason);
+                    client.press("recovery-close");
+                    assert!(
+                        overtaken.len() < 40,
+                        "the review of the cancellation was refused 40 times: {:?}",
+                        overtaken.last()
+                    );
+                }
+            }
+        } else if client.element(&direct).is_some() {
+            client.press(&direct);
+            break "Request cancellation on the General tab";
+        } else {
+            client.pass(Duration::from_millis(300));
         }
-        "Request cancellation on the Events tab"
     };
+    evidence.step(
+        "reviews of the cancellation that the record's progress overtook",
+        json!({ "count": overtaken.len(), "reason": overtaken.first() }),
+    );
+    evidence.note("cancellation_reviews_overtaken", json!(overtaken.len()));
     let asked = seconds(started.elapsed());
     client.snap(&mut evidence, "cancellation-requested");
     client.wait("the migration ended", Duration::from_secs(900), |client| {
@@ -4392,6 +4447,73 @@ fn lab_p3_console_window_and_typing() {
         "rebooted_in_place_after_seconds",
         json!(rebooted.map(seconds)),
     );
+    client.close();
+    evidence.finish();
+}
+
+/// The baseline of the lab has the plain guest running on the coordinator
+/// with its disks on the coordinator's local repository. When a run that
+/// failed left it on the member, this moves it back with the application's
+/// own wizard (a live migration with its disks, or a move of the halted
+/// guest's disks and a start); otherwise it only records where it is.
+#[test]
+#[ignore]
+fn lab_baseline_plain_guest_on_the_coordinator() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "baseline-plain-guest-on-the-coordinator");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, _) = servers(&mut client);
+    let home = local_repository(&mut client, coordinator.0);
+    client.select(&object);
+    client.tab(TabId::General);
+    let running = power_state(&mut client, vm) == PowerState::Running;
+    let at_home = disk_repositories(&mut client, vm)
+        .iter()
+        .all(|sr| *sr == home.0)
+        && (!running || resident_host(&mut client, vm) == Some(coordinator.0));
+    evidence.note("moved", json!(!at_home));
+    if !at_home {
+        if running {
+            wait_guest_ready(&mut client, vm, &mut evidence);
+        }
+        let review = migration_to_review(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            coordinator.0,
+            Some(home.0),
+            "home",
+        )
+        .expect("the wizard reaches its review");
+        let operation = apply_migration(&mut client, &mut evidence, vm, "home");
+        client.wait("the move ended", Duration::from_secs(1500), |client| {
+            operation_record(client, operation).0.terminal()
+        });
+        let (state, detail) = operation_record(&mut client, operation);
+        assert_eq!(state, OperationState::Succeeded, "{detail}");
+        evidence.step("moved home", json!({ "review": review, "record": detail }));
+    }
+    if power_state(&mut client, vm) == PowerState::Halted {
+        let before = newest_operation(&mut client, vm).map(|(id, _)| id);
+        client
+            .try_toolbar("vm.start")
+            .expect("the toolbar offers Start for the halted guest");
+        let (start, _) = follow_new_operation(&mut client, vm, before, Duration::from_secs(360));
+        let (state, detail) = operation_record(&mut client, start);
+        assert_eq!(state, OperationState::Succeeded, "{detail}");
+        evidence.note("started", json!(true));
+    }
+    client.wait(
+        "the guest runs on the coordinator with its disks there",
+        Duration::from_secs(180),
+        |client| {
+            placed(client, vm, Some(coordinator.0), home.0)
+                && power_state(client, vm) == PowerState::Running
+        },
+    );
+    evidence.note("guest", json!(name));
     client.close();
     evidence.finish();
 }
