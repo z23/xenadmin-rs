@@ -1,7 +1,10 @@
 # XenAdmin / XCP-ng Center parity audit
 
 Audit date: 2026-11-08. Rust baseline: 0.2.0 (`2755a5b`) plus the 0.2.1 Operations
-visibility fix. Reference: [xcp-ng/xenadmin revision
+visibility fix. At that date the desktop was the Rune front end; it has since been replaced by
+the GPUI Kit front end ([migration plan](GPUI-MIGRATION.md)), and the files of the Rune crate
+this audit names (`preferences.rs`, `main.rs`, `console_view.rs`, `vm_snapshots.rs` of
+`crates/xenadmin-desktop/src`) exist only in the history, up to commit `89d700c`. Reference: [xcp-ng/xenadmin revision
 35dc091c5b62ab3b22449bb7a89cfcf84a6600d4][reference].
 
 The application is a direct-host recovery alpha. Direct connection, inventory, basic
@@ -37,7 +40,7 @@ Reference: `XenModel/Network/XenConnection.cs`, `XenAdmin/Dialogs/Network`,
 `XenAdmin/Dialogs/RestoreSession`, `XenAdmin/Dialogs/OptionsPages/ConnectionOptionsPage.cs`.
 Rust: [connection.rs](../crates/xenadmin-core/src/connection.rs),
 [trust.rs](../crates/xenadmin-core/src/trust.rs),
-[preferences.rs](../crates/xenadmin-desktop/src/preferences.rs).
+`preferences.rs` of the Rune desktop of that time.
 
 | Workflow | Status | Gap / boundary | Priority |
 | --- | --- | --- | --- |
@@ -63,7 +66,7 @@ Rust: [connection.rs](../crates/xenadmin-core/src/connection.rs),
 Reference: `XenAdmin/TabPages`, `XenAdmin/Controls/XenSearch`, `XenAdmin/SettingsPanels`.
 Rust: [model.rs](../crates/xenadmin-core/src/model.rs),
 [xapi.rs](../crates/xenadmin-core/src/xapi.rs),
-[desktop](../crates/xenadmin-desktop/src/main.rs).
+`main.rs` of the Rune desktop of that time.
 
 | Workflow | Status | Gap / boundary | Priority |
 | --- | --- | --- | --- |
@@ -108,7 +111,7 @@ blanket enablement of force buttons. Recovery-mode boot is a separate [reference
 Reference: `XenAdmin/ConsoleView`, `XenAdmin/Controls/ConsolePanel.cs`,
 `XenAdmin/Controls/ConsoleTab`.
 Rust: [console.rs](../crates/xenadmin-core/src/console.rs),
-[console_view.rs](../crates/xenadmin-desktop/src/console_view.rs).
+`console_view.rs` of the Rune desktop of that time.
 
 | Workflow | Status | Gap / boundary | Priority |
 | --- | --- | --- | --- |
@@ -129,7 +132,7 @@ Rust: [console.rs](../crates/xenadmin-core/src/console.rs),
 
 Reference: `XenAdmin/TabPages/SnapshotsPage.cs`, `XenModel/Actions/VM`,
 `XenModel/Actions/VMSS`, `XenAdmin/Wizards/NewPolicyWizard`.
-Rust: [snapshot UI](../crates/xenadmin-desktop/src/vm_snapshots.rs),
+Rust: the snapshot UI (`vm_snapshots.rs` of the Rune desktop of that time),
 [verification report](reports/2026-11-07-snapshots.md).
 
 | Workflow | Status | Gap / boundary | Priority |

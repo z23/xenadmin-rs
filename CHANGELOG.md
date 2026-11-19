@@ -69,9 +69,9 @@ again for that, because no published version reads format 5.
 ### Changed
 
 - The interface is rebuilt on a different toolkit, GPUI Kit, and laid out differently.
-  The Rune interface of 0.19.0 and earlier is gone from this version; nothing of the
-  backend changed for it (the core, the XAPI bindings, the journal and the profile store
-  are as they were). What someone who knows 0.19.0 meets:
+  The Rune interface of 0.19.0 and earlier is gone from this version. The move itself
+  changed nothing in the backend: no commit of it touches the core, the XAPI bindings, the
+  journal or the profile store (the other entries of this version do). What someone who knows 0.19.0 meets:
   - A menu bar (File, View, Pool, Server, VM, Storage, Templates, Tools, Window, Help) and
     a toolbar, both filled from one table of commands, which also fills the context menus
     and the row of actions at the top of a tab. A command that cannot be used now is shown

@@ -1,5 +1,12 @@
 # GPUI Kit as a front-end candidate
 
+Status on 2026-11-19: the candidate became the front end. On 2026-11-17 the operator directed that
+the migration be finished, and the cutover of the code has happened: the Rune crate is removed,
+the crate `xenadmin-gpui` (a spike then, since rewritten as the front end) is `crates/xenadmin-desktop`, and `scripts/package.sh` stages the
+GPUI Kit client. The record below is kept as it was written on 2026-11-14, before that; its present
+tense about the Rune binary is of that date. What is and is not established for the new front end
+is in the "Status" section of the [migration plan](../GPUI-MIGRATION.md).
+
 Gate G0 has not passed. This record states the evaluation and the alternatives.
 It does not switch the released front end. The Rune binary in `xenadmin-desktop`
 remains the artifact that `scripts/package.sh` ships.
