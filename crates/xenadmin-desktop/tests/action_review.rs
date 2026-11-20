@@ -22,6 +22,10 @@
 //!   each scene and for one object of every kind of the demonstration
 //!   (what is below the fold, behind a dialog or on a tab no scene shows).
 //!
+//! A control that no state the test makes shows is not found: the review
+//! of this test on 2026-11-20 found that its operation records had hidden
+//! the controls of the Snapshots and device records (see `further_states`).
+//!
 //! A row of a table is not a control here: selecting it sets the target of
 //! the commands and changes nothing else. What a double click or Enter on
 //! a row does is collected (`<table>/activate`).
@@ -36,8 +40,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{WIDE, close, model, on, open, open_scene, run};
 use xenadmin_core::{
-    OperationAction, OperationId, OperationRecord, OperationState, SnapshotOperation,
-    SnapshotWorkflow,
+    DeviceOperation, OperationAction, OperationId, OperationRecord, OperationState, ResourceAction,
+    ResourceOperationRecord, ResourceTarget, SnapshotOperation, SnapshotWorkflow,
 };
 use xenadmin_desktop::console::windows as console_windows;
 use xenadmin_desktop::kit::testing::{TestAppContext, TestQueryExt as _, TestWindowExt as _};
@@ -46,6 +50,7 @@ use xenadmin_desktop::scene_view::{LOCAL_ROW_KEY, TAB_BASE, TAB_BODY_KEY, TABS_K
 use xenadmin_desktop::scenes::{self, Options, ShellWindow};
 use xenadmin_desktop::shell::{nav as pane, status, toolbar};
 use xenadmin_ui::areas::console::view as console_view;
+use xenadmin_ui::areas::events::{self, Family, activity};
 use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::ConsoleWindowId;
 use xenadmin_ui::nav::{self, NavView};
@@ -113,14 +118,16 @@ const WINDOW: &str = "The detached console window has no menu bar, toolbar or ro
     window. In the main window the same control is a command of the Console tab's row.";
 
 /// Why a control under an operation record is not a command.
-const RECORD: &str = "Its target is one operation record, shown as a line of the tab. A record is not an \
-    object of the selection, which is what a command acts on: it is the row's own action.";
+const RECORD: &str = "Not moved, by choice. Its target is one operation record, shown as a line of the tab. \
+    The plan lets a command of a tab's row act on the selection of a grid; the records are \
+    lines without a selection and were not made a grid in this port, so the control stays \
+    the record's own.";
 
 /// Why the two buttons of the saved graph presets are not commands.
-const PRESET: &str = "It acts on the preset named in the field beside it or on the preset of its own row, \
-    inside the body that replaces the graphs (opened by the command performance.presets); \
-    the presets stay inside the tab as they were. It writes only the client's own \
-    preferences.";
+const PRESET: &str = "Not moved, by choice. It acts on the preset named in the field beside it or on the \
+    preset of its own row, inside the body that replaces the graphs (opened by the command \
+    performance.presets); the presets were left inside the tab. It writes only the \
+    client's own preferences.";
 
 /// The review. Keep it sorted by place; within a place a narrower key
 /// comes before the wider one that would also match.
@@ -236,9 +243,10 @@ const REVIEWED: &[Reviewed] = &[
         "tab-console",
         "confirm-console-typing",
         "types the reviewed text into the guest as key presses",
-        "It confirms the text shown in the group it is in. The review is an inline group of the \
-         tab, as it was, opened by the command console.type-clipboard; the confirmation \
-         belongs beside the text it confirms.",
+        "Not moved, by choice. It confirms an action, and the review it confirms is an inline \
+         group of the tab (opened by the command console.type-clipboard) where the project's \
+         rule would make it a dialog; the review was left as the old front end had it, with \
+         the confirmation beside the text it confirms.",
     ),
     view(
         "tab-console",
@@ -263,6 +271,16 @@ const REVIEWED: &[Reviewed] = &[
     ),
     view(
         "tab-events",
+        "activity-show-children",
+        "whether the records of the members of a batch are rows of the history",
+    ),
+    view(
+        "tab-events",
+        "activity-show-hidden",
+        "whether the locally hidden finished entries are rows of the history",
+    ),
+    view(
+        "tab-events",
         "activity-search",
         "the text filter of the list",
     ),
@@ -270,6 +288,12 @@ const REVIEWED: &[Reviewed] = &[
         "tab-events",
         "activity-state-filter",
         "the state filter of the list",
+    ),
+    view(
+        "tab-events",
+        "cross-destination-*",
+        "selects the VM of a finished transfer in its destination pool (after a live move, \
+         with its console); it changes no object",
     ),
     // General: the operation records of a VM.
     action(
@@ -324,6 +348,12 @@ const REVIEWED: &[Reviewed] = &[
          row are in the tab's row and the row's menu.",
     ),
     // Networking and NICs.
+    action(
+        "tab-networking",
+        "device-recheck-*",
+        "asks the server again for the outcome of a device change whose response was lost",
+        RECORD,
+    ),
     view(
         "tab-networking",
         "network-operation-history",
@@ -428,9 +458,26 @@ const REVIEWED: &[Reviewed] = &[
         "snapshot-preview-load",
         "asks the host for the saved picture of the selected snapshot and shows it; it changes \
          nothing on the host",
-        "It fills the section it is in, \"Snapshot information\", for the snapshot that section \
-         shows, and reports a refusal there; it is a read. It stays a button of the section, \
-         as it was a button of the old dialog.",
+        "Not moved, by choice. It acts on the selected snapshot, as the commands of the tab's \
+         row do, and could be one of them. It was left a button of the section it fills, \
+         \"Snapshot information\", where it reports a refusal; it is a read.",
+    ),
+    action(
+        "tab-snapshots",
+        "snapshot-operation-cancel-*",
+        "asks that the remaining steps of a running snapshot workflow are not started",
+        RECORD,
+    ),
+    action(
+        "tab-snapshots",
+        "snapshot-operation-recheck-*",
+        "asks the server again for the outcome of a snapshot workflow whose response was lost",
+        RECORD,
+    ),
+    view(
+        "tab-snapshots",
+        "snapshot-show-created-*",
+        "selects the VM or template a snapshot workflow created",
     ),
     view(
         "tab-snapshots",
@@ -438,6 +485,12 @@ const REVIEWED: &[Reviewed] = &[
         "shows the snapshots as a tree or as a list",
     ),
     // Storage.
+    action(
+        "tab-storage",
+        "device-recheck-*",
+        "asks the server again for the outcome of a device change whose response was lost",
+        RECORD,
+    ),
     view("tab-storage", "disk-search", "the text filter of the disks"),
     view(
         "tab-storage",
@@ -701,10 +754,11 @@ fn further_states(cx: &mut TestAppContext, findings: &mut Findings) {
     described_tabs(cx, &shell, state, findings);
     close(cx, shell);
     // A VM with operation records in every state that offers a control:
-    // its tabs list them, each with the controls of the record.
-    let state = "snapshots, with operation records";
+    // its tabs list them, each with the controls of the record. A tab
+    // shows only its newest records (the Snapshots tab two), so each record
+    // is also shown alone.
     let shell = open_scene(cx, "snapshots", WIDE);
-    run(cx, &shell, |m| {
+    let (pool, vm, created) = model(cx, &shell, |m| {
         let scope = m
             .scope()
             .objects
@@ -712,30 +766,111 @@ fn further_states(cx: &mut TestAppContext, findings: &mut Findings) {
             .cloned()
             .expect("the VM of the scene");
         let pool = scope.pool.expect("the pool of the VM");
-        let record = |state: OperationState| -> OperationRecord {
-            serde_json::from_value(serde_json::json!({
-                "id": OperationId::new(), "pool": pool, "vm": scope.id,
-                "action": OperationAction::Snapshot(SnapshotOperation::Workflow {
-                    operation: SnapshotWorkflow::Create {
-                        name: "Before upgrade".into(), description: String::new(), memory: false,
-                    },
-                }),
-                "state": state, "progress": null, "detail": "Synthetic record",
-            }))
-            .expect("operation record")
-        };
-        let mut running = record(OperationState::Tracking);
-        running.can_cancel = true;
-        m.operation_rows = vec![
-            running,
-            record(OperationState::OutcomeUnknown),
-            record(OperationState::Failed),
-            record(OperationState::PartiallyCompleted),
-            record(OperationState::Succeeded),
-        ];
+        // Any other VM of the pool stands for what a workflow created.
+        let created = m
+            .inventory
+            .as_ref()
+            .and_then(|inventory| {
+                inventory
+                    .vms
+                    .keys()
+                    .find(|id| id.to_string() != scope.id.to_string())
+                    .copied()
+            })
+            .expect("a second VM");
+        (pool, scope.id, created)
     });
-    let tab = model(cx, &shell, |m| m.active_tab().key());
-    on(cx, &shell, |window, _| drawn(window, tab, state, findings));
+    let record = |action: OperationAction, state: OperationState| -> OperationRecord {
+        let mut record: OperationRecord = serde_json::from_value(serde_json::json!({
+            "id": OperationId::new(), "pool": pool, "vm": vm,
+            "action": action,
+            "state": state, "progress": null, "detail": "Synthetic record",
+        }))
+        .expect("operation record");
+        record.can_cancel = state == OperationState::Tracking;
+        record
+    };
+    let snapshot = |state: OperationState| {
+        record(
+            OperationAction::Snapshot(SnapshotOperation::Workflow {
+                operation: SnapshotWorkflow::Create {
+                    name: "Before upgrade".into(),
+                    description: String::new(),
+                    memory: false,
+                },
+            }),
+            state,
+        )
+    };
+    let mut finished = snapshot(OperationState::Succeeded);
+    finished.created_vm = Some(created);
+    let device = record(
+        OperationAction::Device(DeviceOperation::AddCdDrive { device: "3".into() }),
+        OperationState::OutcomeUnknown,
+    );
+    let records = vec![
+        snapshot(OperationState::Tracking),
+        snapshot(OperationState::OutcomeUnknown),
+        snapshot(OperationState::Failed),
+        snapshot(OperationState::PartiallyCompleted),
+        finished,
+        device,
+    ];
+    let mut states: Vec<(String, Vec<OperationRecord>)> = records
+        .iter()
+        .map(|record| {
+            (
+                format!(
+                    "snapshots, with one operation record ({}, {:?})",
+                    record.action.label(),
+                    record.state
+                ),
+                vec![record.clone()],
+            )
+        })
+        .collect();
+    states.push(("snapshots, with operation records".into(), records));
+    for (state, records) in states {
+        run(cx, &shell, |m| m.operation_rows = records);
+        let tab = model(cx, &shell, |m| m.active_tab().key());
+        on(cx, &shell, |window, _| drawn(window, tab, &state, findings));
+        described_tabs(cx, &shell, &state, findings);
+    }
+    close(cx, shell);
+    // A finished transfer to another pool, selected in the history of the
+    // Events tab: its outcome offers the destination.
+    let state = "cross-pool, a finished transfer selected in the history";
+    let shell = open_scene(cx, "cross-pool", WIDE);
+    run(cx, &shell, |m| {
+        let editor = m.areas.cross_pool.wizard.as_deref().expect("the wizard");
+        let pool = editor.source.inventory.pool_id;
+        let record: ResourceOperationRecord = serde_json::from_value(serde_json::json!({
+            "id": OperationId::new(), "pool": pool,
+            "target": ResourceTarget::Pool(pool),
+            "action": ResourceAction::CrossPoolVm(editor.review.clone().expect("the review")),
+            "state": OperationState::Succeeded, "progress": 1.0,
+            "detail": "Synthetic transfer", "created_at_ms": 1,
+            "can_cancel": false, "cancel_requested": false, "steps": [], "created": null,
+            "transfer_created": {
+                "vms": [editor.vm.id], "disks": [], "vbds": [], "vifs": [], "networks": [],
+            },
+        }))
+        .expect("resource record");
+        let key = activity::key_of(activity::history_key(pool, record.id, Family::Resource));
+        m.resource_rows.push(record);
+        m.areas.cross_pool.wizard = None;
+        events::show(m);
+        m.areas.events.list = activity::Tab::History;
+        m.areas.events.selected = Some(key);
+    });
+    assert!(
+        model(cx, &shell, |m| activity::selected(
+            m,
+            activity::Tab::History
+        )
+        .is_some()),
+        "the transfer is a row of the history"
+    );
     described_tabs(cx, &shell, state, findings);
     close(cx, shell);
 }

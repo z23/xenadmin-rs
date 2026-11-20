@@ -89,7 +89,7 @@ operator may hold that a person's run is needed and say so.
 | --- | --- | --- |
 | G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted. The session in a virtual machine added to several of those limits; none is closed for a real seat | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
-| G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer); 5 partly: the review is made as a test, and it finds 18 actions outside a row of commands, recorded with their reasons | [G2](reports/2026-11-19-gpui-gate-g2.md) |
+| G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer); 5 partly: the review is made as a test, and it finds 22 actions outside a row of commands, recorded with their reasons | [G2](reports/2026-11-19-gpui-gate-g2.md) |
 | G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
 | G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
@@ -101,7 +101,7 @@ What remains, and is the operator's:
    recovery gate of `README.md` (with Xen Orchestra shut down: locate the XO VM, start it, use its
    console) and a console typed into with a real keyboard. The findings of the runs in virtual
    machines that need a decision are listed in their reports.
-3. The word on the 18 actions that stay outside a row of commands (gate G2, criterion 5), and on
+3. The word on the 22 actions that stay outside a row of commands (gate G2, criterion 5), and on
    whether the criteria met in a virtual machine are accepted as met.
 4. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
    coordinator handover, and a keyring.
