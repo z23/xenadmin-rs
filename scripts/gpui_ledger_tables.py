@@ -54,8 +54,11 @@ UI = REPO / "crates/xenadmin-ui/src"
 GPUI = REPO / "crates/xenadmin-desktop"
 LEDGER = REPO / "docs/GPUI-MIGRATION-LEDGER.md"
 
+# An attribute may hold a string with a bracket in it
+# (`#[should_panic(expected = "… [\"a\", \"b\"]")]`): its text is read string by string.
+ATTRIBUTE_TEXT = r'(?:[^\]"]|"(?:[^"\\]|\\.)*")*'
 TEST = re.compile(
-    r"#\[(?:gpui_kit::|tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*"
+    r"#\[(?:gpui_kit::|tokio::)?test" + ATTRIBUTE_TEXT + r"\]\s*(?:#\[" + ATTRIBUTE_TEXT + r"\]\s*)*"
     r"(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)",
     re.S,
 )
