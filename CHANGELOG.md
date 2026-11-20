@@ -340,7 +340,11 @@ machines, with software rendering, input injected by a script and nobody at them
   - the menu bar is not opened by F10 or Alt with a letter;
   - a host's refusal is shown by its code, for example `VM_REQUIRES_SR`.
 - The Snapshots tab's row of actions has seven commands and wraps in an 800 wide window
-  at an interface size above 100%; selecting a row then moves a short table.
+  at an interface size above 100%, or in a font slightly wider than the one it was
+  measured in (Adwaita Sans left 4 pixels). The part above the table then gives way
+  for the table: the "Show list" switch is partly hidden until that part is scrolled,
+  and it shows no scrollbar. Selecting a snapshot no longer moves the table (seen on
+  the test platform and in the headless scene tool at 780 by 600, not in a window).
 - The experimental areas are verified in the new interface on fixtures and by rendering
   only. The lab runs their entries in this changelog cite were made through the Rune
   interface or through the core's own scenarios

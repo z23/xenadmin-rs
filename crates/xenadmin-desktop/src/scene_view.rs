@@ -34,6 +34,11 @@ pub const TAB_COLUMN_KEY: &str = "tab-column";
 /// The key of the part of a tab body its last table is seen through, when
 /// the body ends in one: the table, and the sections about its selection.
 pub const TAB_RESULTS_KEY: &str = "tab-results-body";
+/// The id of the head of such a body: the part above the table and the
+/// table, which together are never higher than the body.
+pub const TAB_HEAD_KEY: &str = "tab-head";
+/// The id of what scrolls inside the part above a short table.
+pub const TAB_ABOVE_KEY: &str = "tab-above";
 /// The id of the text shown when nothing provides the active tab.
 pub const TAB_EMPTY_KEY: &str = "tab-empty";
 /// The path prefix of the tab body in the flattened description.
@@ -337,38 +342,47 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
             //
             // A shorter table is as high as its rows and needs no half:
             // the part above gives way only as far as the table needs.
-            // When sections follow a short table, neither part gives way
-            // and the body scrolls as one column, so that the sections
-            // have the height of the body to be read in.
+            // The two stand in a head that is never higher than the body.
+            // The sections that follow a short table stand after the
+            // head, and the body scrolls as one column, so that they have
+            // the height of the body to be read in.
             //
-            // The elements are the same in all three cases: a row that is
-            // selected adds a section after the table, and the table (and
-            // a menu that the same press opened on it) must stay the
-            // element it was.
+            // A row that is selected adds a section after the table. The
+            // table (and a menu that the same press opened on it) must
+            // stay the element it was, and it must stay where it was: the
+            // head is laid out without regard to what follows it, so the
+            // part above gives the same way with and without a section.
+            // (Before 2026-11-20 the part above took its whole height
+            // back when a section followed, and the table moved by what
+            // it had given: more than a row where the row of local
+            // actions is two lines high.)
             Some(results) => {
                 let Results {
                     start,
                     long,
-                    followed,
+                    followed: _,
                 } = results;
                 // Only a long table takes the height that is left; a short
                 // one is as high as its rows.
                 let fills = long.then_some(start);
                 let mut above = blocks_filling(&pass, TAB_BASE, &items, fills, window, cx);
-                let results = above.split_off(start);
-                let one_column = !long && followed;
+                let mut results = above.split_off(start);
+                // Under a long table the sections are in its part; after a
+                // short one they follow the head.
+                let after = match long {
+                    true => Vec::new(),
+                    false => results.split_off(1),
+                };
                 let above = v_flex()
                     .id(TAB_SCROLL_KEY)
                     .test_support()
                     .w_full()
-                    .map(|part| match one_column {
-                        true => part.flex_none(),
-                        false => part.flex_shrink(1.).min_h_0(),
-                    })
+                    .flex_shrink(1.)
+                    .min_h_0()
                     .when(long, |part| part.max_h(relative(0.5)))
                     .overflow_hidden()
-                    .child(
-                        v_flex()
+                    .child(match long {
+                        true => v_flex()
                             .w_full()
                             .flex_shrink(1.)
                             .min_h_0()
@@ -377,8 +391,27 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
                             .pt_4()
                             .pb_2()
                             .gap_3()
-                            .children(above),
-                    );
+                            .children(above)
+                            .into_any_element(),
+                        // Above a short table the part scrolls without the
+                        // Kit's scroll area, which keeps the wheel to
+                        // itself while it has anything to scroll: the
+                        // wheel over this part must also move the body,
+                        // or the sections after the table are not reached
+                        // from here. It has no scrollbar then.
+                        false => v_flex()
+                            .id(TAB_ABOVE_KEY)
+                            .w_full()
+                            .flex_shrink(1.)
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px_4()
+                            .pt_4()
+                            .pb_2()
+                            .gap_3()
+                            .children(above)
+                            .into_any_element(),
+                    });
                 let results = div()
                     .id(TAB_RESULTS_KEY)
                     .test_support()
@@ -394,19 +427,40 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
                             .when(long, |column| column.h_full())
                             .overflow_y_scrollbar()
                             .px_4()
+                            // The same with and without sections after
+                            // it: the head must not change its height.
                             .pb_4()
                             .when(start == 0, |column| column.pt_4())
                             .when(start > 0, |column| column.pt_1())
                             .gap_3()
                             .children(results),
                     );
+                let head = v_flex()
+                    .id(TAB_HEAD_KEY)
+                    .w_full()
+                    .map(|head| match long {
+                        true => head.flex_1().min_h_0(),
+                        false => head.flex_none().max_h(relative(1.)),
+                    })
+                    .when(start > 0, |head| head.child(above))
+                    .child(results);
                 v_flex()
                     .id(TAB_COLUMN_KEY)
                     .size_full()
                     .overflow_y_scroll()
                     .test_support()
-                    .when(start > 0, |column| column.child(above))
-                    .child(results)
+                    .child(head)
+                    .when(!after.is_empty(), |column| {
+                        column.child(
+                            v_flex()
+                                .w_full()
+                                .flex_none()
+                                .px_4()
+                                .pb_4()
+                                .gap_3()
+                                .children(after),
+                        )
+                    })
                     .into_any_element()
             }
             // Anything else is one column that scrolls. The element with

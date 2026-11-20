@@ -10,7 +10,7 @@ mod common;
 
 use common::Step::*;
 use common::{SMALL, WIDE, close, on, open_scene, run_step};
-use xenadmin_desktop::kit::testing::{TestAppContext, TestQueryExt as _};
+use xenadmin_desktop::kit::testing::{TestAppContext, TestQueryExt as _, TestWindowExt as _};
 use xenadmin_desktop::kit::*;
 use xenadmin_desktop::scene_view::{LOCAL_ROW_KEY, TAB_RESULTS_KEY, TAB_SCROLL_KEY};
 use xenadmin_desktop::scenes::ShellWindow;
@@ -140,19 +140,15 @@ fn a_short_table_is_as_high_as_its_rows_and_stays_the_same_element_when_a_row_is
     cx: &mut TestAppContext,
 ) {
     const TABLE: &str = "snapshots-table";
-    // The smallest height, at a width where the row of local actions is one
-    // line in the font of the test platform, which is wider than the
-    // client's. The row has seven commands since "Export selection…" joined
-    // it; in the client's font they fit in 800 (the scene tool draws the row
-    // 41 high at 800 by 600, and there the table moves by 5). Where the row
-    // wraps, the part above the table gives way at this height and a
-    // selection then moves the table by what it gave: this test is about
-    // the body that fits.
-    const SIZE: (f32, f32) = (960., SMALL.1);
-    let scene = open_scene(cx, "snapshots", SIZE);
+    // The smallest size. In the font of the test platform, which is wider
+    // than the client's, the seven commands of the row of local actions
+    // need two lines here, and the part above the table gives way for the
+    // table: the case in which a selected row moved the table by more than
+    // a row before 2026-11-20.
+    let scene = open_scene(cx, "snapshots", SMALL);
     assert!(
-        bounds(cx, &scene, LOCAL_ROW_KEY).size.height < px(48.),
-        "the row of local actions is one line"
+        bounds(cx, &scene, LOCAL_ROW_KEY).size.height > px(48.),
+        "the row of local actions is two lines on the test platform"
     );
     // Three snapshots: the table needs no half of the body, and all of it
     // is in the window under what stands above it.
@@ -183,7 +179,21 @@ fn a_short_table_is_as_high_as_its_rows_and_stays_the_same_element_when_a_row_is
     });
     assert_eq!(path(cx, &scene, TABLE), before);
     let moved = bounds(cx, &scene, TABLE).top() - at.top();
-    assert!(moved.abs() <= px(12.), "the table moved by {moved:?}");
+    assert!(moved.abs() <= px(1.), "the table moved by {moved:?}");
+    // The part above the table has given way and scrolls by itself. The
+    // wheel over it also moves the body: the information after the table
+    // is reached from anywhere in the body.
+    let toggle = bounds(cx, &scene, "snapshot-tree-toggle").top();
+    on(cx, &scene, |window, cx| {
+        window.scroll(
+            TAB_SCROLL_KEY,
+            ScrollDelta::Pixels(point(px(0.), px(-60.))),
+            cx,
+        );
+        window.render_frame(cx);
+    });
+    assert_eq!(bounds(cx, &scene, TABLE).top(), at.top() + moved - px(60.));
+    assert!(bounds(cx, &scene, "snapshot-tree-toggle").top() < toggle - px(60.));
     must(&mut *cx, &scene, Reach(&["snapshot-information"]));
     must(&mut *cx, &scene, Reach(&[TABLE]));
     close(cx, scene);
