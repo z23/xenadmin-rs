@@ -286,7 +286,12 @@ is experimental. The Wayland path has carried keys to a lab guest once, in a vir
 machine: keys injected at the machine's keyboard, on sway 1.12, arrived in the guest with
 the same key codes under a German layout of the compositor as under the US one
 ([session report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md)). In the packages built before
-2026-11-19 a held key does not repeat in a console on that path. The X11 path has not been
+2026-11-20 a held key does not repeat in a console on that path. With the AppImage CI built of
+the merged tree it repeated in the same machine, after the compositor's delay and at its
+rate, and stopped at the key's release, when the focus left the window and when the console
+was closed ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-20-gpui-merged-tree.md)).
+While a key is held and repeats, a pointer press on a button, a tab or a menu of the window
+does nothing until the key is released. The X11 path has not been
 used with a console in a window, and the headless lab runs sent keys through the toolkit's
 test events. A person's keyboard, other compositors, clipboard exchange without focus and
 fullscreen on a real desktop remain open.

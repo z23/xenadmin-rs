@@ -174,8 +174,11 @@ is forwarded to the running client before the display is asked about; `WAYLAND_S
 alone no longer counts as a display; only the starting thread's panic is taken for a
 failed start, and one that is none of the failures below keeps the usual report with its
 place; the saved sessions are restored only once the window is open. These changes have
-unit tests. They were not run in a machine: what follows describes the build of
-2026-11-19.)
+unit tests. What follows describes the build of 2026-11-19. The AppImage CI built of the
+merged tree was run in the Arch session machine on 2026-11-20
+([report](2026-11-20-gpui-merged-tree.md)): no display named, a Wayland or X display that
+cannot be reached, and no usable graphics backend each ended at once with status 1 and the
+lines below; a start without a font and one without a seat were not tried with it.)
 
 After the check, `crates/xenadmin-desktop/src/app.rs` was changed so that these starts end
 with one plain line and status 1:
@@ -196,8 +199,8 @@ The wording and the test for a named display are held by two unit tests of that 
 the process ends in each case is not held by any test: it was seen once, with a debug
 build of the workstation, in the Arch machine (no display, the two displays that cannot
 be reached, no font, no Vulkan driver, no seat, and an ordinary start that still opened
-its window under Sway; the case without a Vulkan loader was not repeated). That binary is not a package: CI
-has not built this change, and it was not tried on Ubuntu.
+its window under Sway; the case without a Vulkan loader was not repeated). That binary is not a package. CI
+built this change on 2026-11-20 (see the note above); it was not tried on Ubuntu.
 
 ## An X session without Wayland (Ubuntu)
 

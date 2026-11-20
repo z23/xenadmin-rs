@@ -65,7 +65,9 @@ keyboard path ([report](docs/reports/2026-11-19-gpui-vm-session.md)). Not establ
 person has used the new front end in a window; it has not drawn on a hardware GPU; it has
 not run on Hyprland, GNOME or KDE, nor with a console on X11; no person has used a screen
 reader with it; no keyring was present in any run; and the fixes those runs led to are in
-no package yet. The qualification described in the rest of this section was obtained with
+a CI package of the branch only (commit `3493640`), whose AppImage was run in the same
+virtual machine on 2026-11-20, without the recovery gate
+([report](docs/reports/2026-11-20-gpui-merged-tree.md)). The qualification described in the rest of this section was obtained with
 the released versions, through the Rune interface or through the core's own lab
 scenarios.
 
@@ -162,7 +164,7 @@ started, and typed into at its login prompt; the client's connections went to th
 coordinator only; XO answered again afterwards
 ([report](docs/reports/2026-11-19-gpui-vm-session.md), section E). It has not been
 repeated by a person at a desk or with a release artifact, which is what a release still
-needs (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
+needs, nor with the package CI built of the merged tree on 2026-11-20 (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
 
 ## Release history
 

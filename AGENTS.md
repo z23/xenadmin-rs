@@ -79,8 +79,8 @@ Open, and to be said wherever the front end's status is given (the plan's "Statu
 and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
 
 - No person has used the GPUI front end in a window, and no hardware GPU has drawn it. It
-  has run in real windows only in virtual machines on 2026-11-19, with a software renderer
-  and nobody at them: a driven session with keys and pointer injected at the machine's
+  has run in real windows only in virtual machines, on 2026-11-19 and 2026-11-20, with a
+  software renderer and nobody at them: a driven session with keys and pointer injected at the machine's
   devices, on sway 1.12
   ([report](docs/reports/2026-11-19-gpui-vm-session.md)), and the window opened on clean
   Ubuntu 24.04 and Arch systems
@@ -88,8 +88,12 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   key path for console key codes (decision 0006, route A) carried injected keys to a lab
   guest, and the clipboard with the window focused, the portal file chooser, fullscreen
   and server-side decorations were observed. A second start often showed nothing with
-  that package; with a build of the fix, not a CI package, it marked the window urgent on
-  sway and focused it only where sway's policy allows.
+  that package; with a build of the fix it marked the window urgent on sway and focused it
+  only where sway's policy allows, and with the CI package of the merged tree (commit
+  `3493640`), run in the same machine on 2026-11-20, it marked the window urgent
+  ([report](docs/reports/2026-11-20-gpui-merged-tree.md)). In that run a held key repeated
+  in a lab guest's console, and a pointer press on a button did nothing while a key was
+  held and repeating.
   None of that is established for a real keyboard, for Hyprland, GNOME or KDE, or for X11
   with a console; the listener of route A has no test.
 - No person has used a screen reader with it. In the same virtual machine the client was on
@@ -98,10 +102,13 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
 - The packaged builds that were installed and run are the archive and the AppImage CI built
   at commit `e808a2f`, in those virtual machines only. The recovery gate of README.md was
   repeated with that AppImage in the driven session, not by a person and not on a release
-  artifact. The fixes made on 2026-11-19 are in no package.
+  artifact. The fixes made on 2026-11-19 and 2026-11-20 are in the packages CI built
+  at commit `3493640`; of those only the AppImage was run, in the driven session's machine,
+  not on a clean system and without the recovery gate.
 - Live evidence of the GPUI front end is headless: the runs of 2026-11-19 against the lab
   ([successful paths](docs/reports/2026-11-19-gpui-live-headless.md),
-  [refusals, interruptions and recoveries](docs/reports/2026-11-19-gpui-live-paths.md)).
+  [refusals, interruptions and recoveries](docs/reports/2026-11-19-gpui-live-paths.md)),
+  the first of them repeated on the merged tree on 2026-11-20.
   A coordinator change and maintenance of the coordinator through the front end, the
   host's own refusal of an evacuation, and a saved password in the keyring were not run
   through it, and the experimental areas were verified on fixtures and by rendering only.

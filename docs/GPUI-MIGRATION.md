@@ -40,7 +40,12 @@ Done:
   three guest-level scenarios of the second report; the scenarios that reboot, shut down or cut the
   power of the member passed in the one run each had; the two that restart a toolstack were run three
   times each (the member's failed twice and passed at the third run, the coordinator's passed,
-  failed and passed); none of these was repeated on the merged tree.
+  failed and passed); none of these was repeated on the tree of that merge.
+  On 2026-11-20 the scenarios of the first report, and the member's toolstack restart in the stricter
+  form the review of that day gave it, were run on the merged tree as pushed (commit `3493640`) and
+  passed; the member's reboot and shutdown, the restart of the coordinator's toolstack, the lost
+  member and the certificate that is not the pinned one were not run on it
+  ([report](reports/2026-11-20-gpui-merged-tree.md)).
 - Verified in virtual machines on 2026-11-19, with the archive and the AppImage that CI built at
   commit `e808a2f`, software rendering, nobody at them:
   - a clean installation on Ubuntu 24.04 and on Arch: checksums, installer, the window opened under
@@ -54,18 +59,37 @@ Done:
     with the window focused, the portal's file chooser, a console in a separate window, fullscreen,
     server-side decorations, and the client on the accessibility bus with Orca writing names and
     roles for the demo's views ([report](reports/2026-11-19-gpui-vm-session.md)).
-- Defects those runs and the review of the cutover found, fixed in the tree and in no package yet: a
-  second start that showed nothing; a held key that did not repeat in a console; a start without a
-  display, a font, a seat or a Vulkan driver that panicked or never ended; the option "Reduce
-  animation" that did nothing; a toolkit guard of the check script that could not fire. The two
-  first were confirmed in the virtual machine with builds of their fixes, on sway only.
-- A review of the merged tree on 2026-11-20 (claims, code, tests) changed the client again, in no
-  package and run in no window: a console key no longer repeats after its listener fails; a second
-  start is forwarded before the display is asked about, and only the starting thread's known
-  failures are said in one line; the sessions are restored once the window is open; a preferences
-  file with a section that is not accepted is kept; selecting a row no longer moves a short table
-  where the row of local actions wraps. These are held by unit tests and by window tests on the
-  headless platform. The live scenarios were not repeated after them.
+- Verified in the same virtual machine on 2026-11-20, with the AppImage that CI built of the merged
+  tree (run 44658600102 of `ci.yml`, commit `3493640`), on sway 1.12, software rendering, input
+  injected, nobody at it ([report](reports/2026-11-20-gpui-merged-tree.md)): a start without a display, or with
+  one that cannot be reached, ends with one line and status 1, and a start with no usable graphics
+  backend with two lines and status 1; the window opens on an empty state directory; a second start
+  marks the first window urgent, also after a press with the pointer over another window, and is
+  forwarded from a shell that names no display; the client connects from a saved connection with its
+  pins; in a lab guest's console the guest recorded the exact typed line, a held key repeating after
+  the compositor's delay at its rate and ending at the release, when the focus left and when the
+  console closed, and a held Shift not repeating; selecting a row of the Snapshots tab does not move
+  its table, at 800 by 600 and where the row of local actions wraps; "Reduce animation" survives a
+  restart and was seen to take effect on one animation; closing through the compositor ends the
+  process, and no file of the state directory holds the password.
+- Defects those runs and the review of the cutover found, fixed in the tree and, since 2026-11-20,
+  in the CI package of `3493640`: a second start that showed nothing; a held key that did not repeat
+  in a console; a start without a display, a font, a seat or a Vulkan driver that panicked or never
+  ended; the option "Reduce animation" that did nothing; a toolkit guard of the check script that
+  could not fire. The two first were confirmed in the virtual machine with builds of their fixes and
+  then with that package; so were the start without a display or a graphics backend and the option.
+  All of it on sway only, and the start without a font or without a seat was not tried with the
+  package.
+- A review of the merged tree on 2026-11-20 (claims, code, tests) changed the client again: a
+  console key no longer repeats after its listener fails; a second start is forwarded before the
+  display is asked about, and only the starting thread's known failures are said in one line; the
+  sessions are restored once the window is open; a preferences file with a section that is not
+  accepted is kept; selecting a row no longer moves a short table where the row of local actions
+  wraps. These are held by unit tests and by window tests on the headless platform. The package of
+  `3493640` holds them, and its run in the virtual machine showed the forwarded second start, the
+  failures said in one line, a window that opens and then lists the saved connection, and the table
+  that stays; a listener that fails and a preferences file that is not accepted were not provoked
+  there. The live scenarios of the first report were repeated after them (above).
 - The documents of "Repository and documentation changes", the gate reports and the ledger's final
   pass.
 
@@ -81,17 +105,26 @@ Not established, and to be said wherever the front end's status is given:
 - No person has used a screen reader with it, and nobody heard one: Orca's output was read from its
   log, for the demo's views.
 - No keyring: a saved password and connection at startup have not been tried with the new front end.
-- No package holds the fixes above, and the tree as merged is not pushed: CI has built no commit
-  later than the published head `02bfe4e`, and the packages that were installed and run are those
-  of `e808a2f` (the two differ in documents and one test file).
-- No build of the merged tree has opened a window. Each fix was seen in a build of its own branch
-  before the merge: the second start and the key repeat in a build of `8d6ec1d` on sway, the
-  start-up messages once, in a debug build, in the Arch machine. The merged tree combines
-  three branches' changes to the client's start, and the review of 2026-11-20 changed the start,
-  the key repeat's pump and the layout of a tab body again: all of that is held by tests on the
-  headless platform only. The corrected package lists of the installation guide were not installed alone on an
-  untouched image.
-- The recovery gate has not been run on a release artifact (there is none), nor by a person.
+- The package that holds the fixes above is a CI build of the branch (run 44658600102, commit
+  `3493640`, the pushed head of `gpui-migration`), not a release artifact. Of it only the AppImage
+  was run, in the session's virtual machine; the packages that were installed on clean systems and
+  that went through the recovery gate are those of `e808a2f`.
+- The build of the merged tree has opened its window in one place: the virtual machine of the driven
+  session, on sway 1.12, with a software renderer and injected input. What it showed there of the
+  client's start, the key repeat and the layout of a tab body is in the report of 2026-11-20. A
+  start without a font or without a seat, a key listener that fails and the X11 path were not tried
+  with it: they are held by tests on the headless platform, and the first two by one run of a debug
+  build before the merge. The corrected package lists of the installation guide were not installed
+  alone on an untouched image.
+- Found in that run and not fixed
+  ([report](reports/2026-11-20-gpui-merged-tree.md), findings): while a key is held in a console and
+  repeats, a pointer press on a button, tab or menu of the window does nothing, because the toolkit
+  counts no element as hovered after a key event of its own; and with the software renderer an open
+  console can keep more than one CPU busy, its picture once seen about a minute behind the guest
+  (the load also with the package of `e808a2f`). Whether a hardware GPU shows the second is not
+  known.
+- The recovery gate has not been run on a release artifact (there is none), nor by a person, nor
+  with the package of `3493640`.
 - Live, still missing: a coordinator change and maintenance of the coordinator through the front
   end, the host's own refusal of an evacuation, an operation in flight during a toolstack restart.
 - The experimental areas were verified on fixtures and by rendering only; their live qualification of
@@ -106,23 +139,26 @@ operator may hold that a person's run is needed and say so.
 | G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted. The session in a virtual machine added to several of those limits; none is closed for a real seat | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
 | G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer); 5 partly: the review is made as a test, and it finds 22 actions outside a row of commands, recorded with their reasons | [G2](reports/2026-11-19-gpui-gate-g2.md) |
-| G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
+| G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage of `e808a2f`) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
-| G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
+| G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f` and again at `3493640`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
 
 What remains, and is the operator's:
 
-1. Push the merged tree, so that CI builds packages that hold the fixes of 2026-11-19.
-2. A run of a package at a desk: a person, a hardware GPU, the operator's compositor, with the
+1. A run of a package at a desk: a person, a hardware GPU, the operator's compositor, with the
    recovery gate of `README.md` (with Xen Orchestra shut down: locate the XO VM, start it, use its
    console) and a console typed into with a real keyboard. The findings of the runs in virtual
-   machines that need a decision are listed in their reports.
-3. The word on the 22 actions that stay outside a row of commands (gate G2, criterion 5), and on
+   machines that need a decision are listed in their reports; of 2026-11-20, the pointer press that
+   does nothing while a key repeats in a console.
+2. The word on the 22 actions that stay outside a row of commands (gate G2, criterion 5), and on
    whether the criteria met in a virtual machine are accepted as met.
-4. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
+3. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
    coordinator handover, and a keyring.
-5. The release, with its version (decision D10), its report and its tag.
-6. The repository description on GitHub ("with Rune UI"), the main branch and the old pull requests.
+4. The release, with its version (decision D10), its report and its tag.
+5. The repository description on GitHub ("with Rune UI"), the main branch and the old pull requests.
+
+The merged tree was pushed on 2026-11-20 (`gpui-migration` at `3493640`) and CI built its packages,
+which was the first item of this list until then.
 
 A screen reader run by a person is what would allow the accessibility statement to change (decision
 D11); until one is recorded it stays "not supported".

@@ -21,7 +21,11 @@ runs of the packages CI built at commit `e808a2f`, made the same day in virtual 
 with software rendering and nobody at them: a clean installation on Ubuntu 24.04 and Arch
 ([report](reports/2026-11-19-gpui-clean-install.md)) and a driven Wayland session with
 input injected at the machine's devices
-([report](reports/2026-11-19-gpui-vm-session.md)). No person has used it in a window, it
+([report](reports/2026-11-19-gpui-vm-session.md)). On 2026-11-20 the scenarios of the first
+headless report were run again on the merged tree, and the AppImage CI built of that tree
+(commit `3493640`) was driven in the session's machine through its start and the ways it
+fails, a second start, a guest's console with a held key, the Snapshots tab and its close
+([report](reports/2026-11-20-gpui-merged-tree.md)). No person has used it in a window, it
 has not drawn on a hardware GPU, and no person has used a screen reader with it; the gate
 reports of 2026-11-19 (`reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) give each
 criterion's state.
@@ -194,11 +198,12 @@ and the headless runs of the shell against the lab) never substitutes for these 
 nested compositor still does not establish real seat, clipboard or Orca behaviour. The
 driven sessions recorded before 2026-11-19 were of the Rune interface; the harness's
 element lookups were written for that interface's accessibility tree and have not been
-run against the GPUI Kit front end. Its driven session of 2026-11-19 used a driver of its
-own, outside the repository: a compositor on the display of a virtual machine, keys and
+run against the GPUI Kit front end. Its driven sessions of 2026-11-19 and 2026-11-20 used a driver of
+their own, outside the repository: a compositor on the display of a virtual machine, keys and
 pointer injected at the machine's devices, the accessibility bus read to find controls,
 and a lab guest reporting its own input devices
-([report](reports/2026-11-19-gpui-vm-session.md)). That is a driven session in the sense
+([first report](reports/2026-11-19-gpui-vm-session.md),
+[second](reports/2026-11-20-gpui-merged-tree.md)). That is a driven session in the sense
 of this section and, like a nested compositor, establishes nothing for a real seat with a
 person (gate G3 of the [migration plan](GPUI-MIGRATION.md)).
 

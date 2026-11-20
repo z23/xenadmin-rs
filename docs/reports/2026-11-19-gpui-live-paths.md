@@ -113,7 +113,10 @@ domstate` and `virsh start` for the member's machine, then Server > Exit Mainten
 two scenarios passed in the one run each had. (Found by the review of 2026-11-20, which also made
 the toolstack scenario stricter: it now fails, confirming nothing, if Restart Toolstack is offered
 while the member's console is open, where it used to accept a review that cannot be confirmed or
-a request the host refuses as the refusal. The stricter scenario has not been run.)
+a request the host refuses as the refusal. The stricter scenario was run on 2026-11-20 on the merged tree, commit
+`3493640`, and passed: the menu item was disabled while the console was open, and the restart ran
+after the console was closed (evidence `1795140910-p3-6-member-toolstack-restart`;
+[report](2026-11-20-gpui-merged-tree.md)).)
 
 Utilities, not scenarios: `lab_state` (read-only; run after every scenario),
 `lab_baseline_plain_guest_on_the_coordinator` (new: moves the plain guest home with the
