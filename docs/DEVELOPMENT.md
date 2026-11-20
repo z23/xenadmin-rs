@@ -235,7 +235,8 @@ start forwarded (`wayland_activate.rs`): in a virtual machine on sway 1.12 that 
 first window urgent, and focused it where sway's policy allows a launcher's token to;
 before that fix a second start often showed nothing
 ([report](reports/2026-11-19-gpui-vm-session.md), finding 1). No other compositor was
-tried. A start from a shell that names no display ends with a message before it asks.
+tried. A start from a shell that names no display is still forwarded when a client is
+running; only a start that would open a window itself ends there with a message.
 
 ## Verification
 

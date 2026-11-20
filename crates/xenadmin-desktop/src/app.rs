@@ -317,10 +317,6 @@ pub fn start(
     let consoles = ConsoleWindows::new(&store);
     let (hooks, last_resort) = hooks_over(&store, consoles.hooks(Hooks::default()));
     intents::install(&store, hooks.clone(), cx);
-    // The waker goes to the model, which restores the sessions that ask
-    // for it (never in a preview). Console frames have a waker of their
-    // own and do not come through here.
-    store.update(cx, |store, cx| store.connect_core(cx));
     let options = window_options(&title, window_size, cx);
     let (window, shell) = gpui_kit::open_window(options, cx, {
         let (store, hooks) = (store.clone(), hooks.clone());
@@ -333,6 +329,13 @@ pub fn start(
         }
     })
     .map_err(|error| format!("The main window did not open: {error}"))?;
+    // Only now that there is a window: the waker goes to the model, which
+    // restores the sessions that ask for it (never in a preview). A start
+    // that ends here without a window has logged in nowhere, and has
+    // nothing to log out of on a path that does not run the close.
+    // Console frames have a waker of their own and do not come through
+    // here.
+    store.update(cx, |store, cx| store.connect_core(cx));
     consoles.install(Some(window), cx);
     // The window went away without being asked to close.
     let quit = Rc::clone(&hooks.quit);
@@ -396,12 +399,23 @@ pub fn start(
 pub const NO_DISPLAY: &str = "xenadmin-rs: no display: neither WAYLAND_DISPLAY nor DISPLAY is set. \
 Start the client from a Wayland or X11 session.";
 
-/// Whether the environment names a display to open the window on: a
-/// Wayland socket by name or as an inherited descriptor, or an X server.
+/// Whether the environment names a display to open the window on, as the
+/// toolkit reads it: a Wayland socket by name, or an X server. A Wayland
+/// connection inherited as a descriptor (`WAYLAND_SOCKET`) without
+/// `WAYLAND_DISPLAY` is none: the toolkit chooses its backend by these two
+/// variables only and would start without a window.
 pub fn names_a_display(variable: impl Fn(&str) -> Option<OsString>) -> bool {
-    ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"]
+    ["WAYLAND_DISPLAY", "DISPLAY"]
         .iter()
         .any(|name| variable(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// Whether this start will open a window, and so needs a display: the
+/// owner of the state directory and a preview do. A start that was
+/// forwarded to the running client shows nothing itself, and one that
+/// failed says its own error.
+pub fn opens_a_window(launch: &Result<Launch, String>) -> bool {
+    matches!(launch, Ok(Launch::Owner(_) | Launch::Preview))
 }
 
 /// The plain words for a start the toolkit gave up with a panic: the
@@ -437,12 +451,44 @@ pub fn window_failure(error: &str) -> String {
     }
 }
 
-/// Until the main window is open, a panic of the toolkit is a start that
-/// failed: it is said in one line and the process ends with status 1.
-/// With `RUST_BACKTRACE` set, and once `started` is set, a panic is
-/// reported as usual.
+/// What is done with a panic while the main window is not open yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartPanic {
+    /// Not the start's own: a panic of another thread (the core's, a
+    /// worker's). It is reported as usual, with its place, and the start
+    /// goes on.
+    Elsewhere,
+    /// A failure of the start that the toolkit is known to give up with
+    /// (the display, the seat, the font): this one plain line, status 1.
+    Known(String),
+    /// Any other panic of the starting thread: the usual report with its
+    /// place first, then this line, status 1.
+    Unknown(String),
+}
+
+/// Tells the panics of a start apart. `starting_thread`: whether the
+/// thread that panicked is the one that starts the application.
+pub fn start_panic(message: &str, starting_thread: bool) -> StartPanic {
+    if !starting_thread {
+        return StartPanic::Elsewhere;
+    }
+    let known = ["failed to resolve font", "failed to connect to", "wl_seat"]
+        .iter()
+        .any(|words| message.contains(words));
+    match known {
+        true => StartPanic::Known(start_failure(message)),
+        false => StartPanic::Unknown(start_failure(message)),
+    }
+}
+
+/// Until the main window is open, a panic of the toolkit on the thread
+/// that starts the application is a start that failed: it is said in one
+/// line and the process ends with status 1 ([`start_panic`]). A panic of
+/// another thread, any panic with `RUST_BACKTRACE` set, and every panic
+/// once `started` is set are reported as usual.
 fn say_start_failures_plainly(started: Arc<AtomicBool>) {
     let usual = std::panic::take_hook();
+    let starting = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
         if started.load(Ordering::SeqCst) || std::env::var_os("RUST_BACKTRACE").is_some() {
             return usual(info);
@@ -453,7 +499,15 @@ fn say_start_failures_plainly(started: Arc<AtomicBool>) {
             .map(String::as_str)
             .or_else(|| payload.downcast_ref::<&str>().copied())
             .unwrap_or("the toolkit did not say why");
-        eprintln!("{}", start_failure(message));
+        let line = match start_panic(message, std::thread::current().id() == starting) {
+            StartPanic::Elsewhere => return usual(info),
+            StartPanic::Known(line) => line,
+            StartPanic::Unknown(line) => {
+                usual(info);
+                line
+            }
+        };
+        eprintln!("{line}");
         std::process::exit(1);
     }));
 }
@@ -486,13 +540,18 @@ pub fn main() -> ExitCode {
             }
         };
     }
-    // Before the state directory is claimed: nothing could be shown.
-    if !names_a_display(|name| std::env::var_os(name)) {
+    // A second start is forwarded to the running client whether or not
+    // this environment names a display: it shows nothing itself. Only a
+    // start that would open a window is refused for want of one, before
+    // anything is restored (the claim on the state directory ends with
+    // the process).
+    let launch = launch::prepare();
+    if opens_a_window(&launch) && !names_a_display(|name| std::env::var_os(name)) {
         eprintln!("{NO_DISPLAY}");
         return ExitCode::FAILURE;
     }
     let (sender, activations) = unbounded::<Option<String>>();
-    let (model, activations) = match launch::prepare() {
+    let (model, activations) = match launch {
         Ok(Launch::Forwarded) => return ExitCode::SUCCESS,
         Ok(Launch::Preview) => match preview_model(&line) {
             Ok(model) => (model, None),
@@ -659,9 +718,49 @@ mod tests {
             ("DISPLAY", "")
         ])));
         assert!(names_a_display(with(&[("WAYLAND_DISPLAY", "wayland-1")])));
-        assert!(names_a_display(with(&[("WAYLAND_SOCKET", "5")])));
+        // The toolkit does not take an inherited connection for a display.
+        assert!(!names_a_display(with(&[("WAYLAND_SOCKET", "5")])));
+        assert!(names_a_display(with(&[
+            ("WAYLAND_SOCKET", "5"),
+            ("WAYLAND_DISPLAY", "wayland-1")
+        ])));
         assert!(names_a_display(with(&[("DISPLAY", ":0")])));
         assert!(NO_DISPLAY.contains("WAYLAND_DISPLAY") && NO_DISPLAY.contains("DISPLAY is set"));
+    }
+
+    #[test]
+    fn only_a_start_that_opens_a_window_needs_a_display() {
+        // A second start is forwarded from a shell without a display.
+        assert!(!opens_a_window(&Ok(Launch::Forwarded)));
+        assert!(opens_a_window(&Ok(Launch::Preview)));
+        // Its own error is what a failed start says.
+        assert!(!opens_a_window(&Err("no state directory".into())));
+    }
+
+    #[test]
+    fn only_the_starting_thread_s_panic_is_a_failed_start() {
+        let font = "failed to resolve font '.SystemUIFont' or any of the fallbacks: Arial";
+        // Another thread's panic is reported as usual, whatever it says.
+        assert_eq!(start_panic(font, false), StartPanic::Elsewhere);
+        assert_eq!(
+            start_panic("index out of bounds", false),
+            StartPanic::Elsewhere
+        );
+        for known in [
+            font,
+            "failed to connect to X server \":99\": Unknown connection error",
+            "Wayland compositor does not provide wl_seat",
+        ] {
+            assert_eq!(
+                start_panic(known, true),
+                StartPanic::Known(start_failure(known))
+            );
+        }
+        // A bug of the client keeps the place it panicked at.
+        assert_eq!(
+            start_panic("index out of bounds", true),
+            StartPanic::Unknown(start_failure("index out of bounds"))
+        );
     }
 
     /// The words are the toolkit's, as the clean-install check recorded them.

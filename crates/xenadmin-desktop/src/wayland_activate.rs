@@ -31,10 +31,18 @@ use wayland_client::protocol::{wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
 
+/// The longest forwarded token that is passed on. The tokens compositors
+/// make are tens of characters; a Wayland request holds 4096 bytes in all,
+/// and one that cannot be sent is the end of the display connection.
+pub const TOKEN_LIMIT: usize = 256;
+
 /// The token a later start forwarded, if it is one: launchers export an
-/// empty variable as readily as none.
+/// empty variable as readily as none. A token longer than [`TOKEN_LIMIT`]
+/// is none either: the request for attention goes out without it.
 pub fn forwarded_token(token: Option<&str>) -> Option<&str> {
-    token.map(str::trim).filter(|token| !token.is_empty())
+    token
+        .map(str::trim)
+        .filter(|token| !token.is_empty() && token.len() <= TOKEN_LIMIT)
 }
 
 struct State {
@@ -226,6 +234,16 @@ mod tests {
         assert_eq!(forwarded_token(Some("")), None);
         assert_eq!(forwarded_token(Some("  \n")), None);
         assert_eq!(forwarded_token(Some(" abc123 ")), Some("abc123"));
+    }
+
+    #[test]
+    fn a_forwarded_token_too_long_for_a_request_is_no_token() {
+        let longest = "t".repeat(TOKEN_LIMIT);
+        assert_eq!(forwarded_token(Some(&longest)), Some(longest.as_str()));
+        // What the core accepts from a second start: up to 4096 bytes.
+        let long = "t".repeat(4096);
+        assert_eq!(forwarded_token(Some(&long)), None);
+        assert_eq!(forwarded_token(Some(&"t".repeat(TOKEN_LIMIT + 1))), None);
     }
 
     #[test]

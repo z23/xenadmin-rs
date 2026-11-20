@@ -169,6 +169,14 @@ error (`SESSION_AUTHENTICATION_FAILED`).
 
 ### What was changed in the client
 
+(Note of 2026-11-20: a review changed this code again after the run below. A second start
+is forwarded to the running client before the display is asked about; `WAYLAND_SOCKET`
+alone no longer counts as a display; only the starting thread's panic is taken for a
+failed start, and one that is none of the failures below keeps the usual report with its
+place; the saved sessions are restored only once the window is open. These changes have
+unit tests. They were not run in a machine: what follows describes the build of
+2026-11-19.)
+
 After the check, `crates/xenadmin-desktop/src/app.rs` was changed so that these starts end
 with one plain line and status 1:
 

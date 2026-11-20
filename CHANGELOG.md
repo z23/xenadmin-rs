@@ -109,10 +109,12 @@ again for that, because no published version reads format 5.
     `--list-scenes` and the like) are gone, and `--theme` and `--size`, which 0.19.0
     accepted on an ordinary start, now apply to `--demo` only: on an ordinary start the
     client prints its usage and ends with status 2. The appearance is set in Options.
-  - Started where no display is named, the client says so in one line and ends, also
-    when a client is already running, whose window such a start used to raise. When the
+  - Started where no display is named (neither `WAYLAND_DISPLAY` nor `DISPLAY`), the
+    client says so in one line and ends. A second start from such a shell is still
+    passed to the client that is running, whose window it asks to show. When the
     display cannot be reached, has no seat, or no usable font or Vulkan driver is found,
-    it says which in one line and ends with status 1.
+    it says which in one line and ends with status 1; any other failure of the start
+    keeps the usual report with the place it happened at.
   - A font of one of these families must be installed: Noto Sans, DejaVu Sans, Cantarell,
     Adwaita Sans, Ubuntu, Arial, Helvetica or Segoe UI. The client embeds none and
     follows no fontconfig alias; the [installation guide](docs/INSTALLATION.md) names
