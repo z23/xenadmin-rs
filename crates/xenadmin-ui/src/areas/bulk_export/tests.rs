@@ -360,7 +360,7 @@ fn several_snapshots_selected_in_the_view_open_one_review_and_single_actions_tak
     // Nothing is selected: there is nothing to export together.
     h.select_rows(TABLE, &[]);
     assert_eq!(
-        h.try_click("snapshot-batch-export-open"),
+        h.try_click(EXPORT_SNAPSHOTS.0),
         Err(export::SNAPSHOT_LIMIT.into())
     );
     assert!(!super::open_snapshots(&mut h.model));
@@ -402,7 +402,7 @@ fn several_snapshots_selected_in_the_view_open_one_review_and_single_actions_tak
             "{command}"
         );
     }
-    h.click("snapshot-batch-export-open");
+    h.click(EXPORT_SNAPSHOTS.0);
     let e = editor(&h);
     assert_eq!(
         e.targets.iter().map(Item::id).collect::<Vec<_>>(),

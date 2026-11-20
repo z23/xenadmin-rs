@@ -213,7 +213,7 @@ test the ledger names as a successor present, the counts of its summary, and, wi
 sources of the removed Rune crate are read only when `XENADMIN_RUNE_SOURCES` names a
 directory that holds them (for example an export of commit `89d700c`, the last with the
 Rune crate: `git archive 89d700c crates/xenadmin-desktop | tar -x -C DIR`, then
-`XENADMIN_RUNE_SOURCES=DIR/crates/xenadmin-desktop`).
+`XENADMIN_RUNE_SOURCES=DIR/crates/xenadmin-desktop/src`).
 
 ### Inspection
 
@@ -230,7 +230,13 @@ One client owns a state directory: a second start on the same directory asks the
 show its window and exits. To run a development build beside an installed client, give it
 a directory of its own (`XENADMIN_STATE_DIR`) and pass the same variable to
 `./scripts/inspect.sh`. The request to show the window is tested on the Kit's test
-platform; activation of a real window by a second start has not been shown.
+platform. On Wayland the first client asks the compositor again with the token the second
+start forwarded (`wayland_activate.rs`): in a virtual machine on sway 1.12 that marked the
+first window urgent, and focused it where sway's policy allows a launcher's token to;
+before that fix a second start often showed nothing
+([report](reports/2026-11-19-gpui-vm-session.md), finding 1). No other compositor was
+tried. A start from a shell that names no display is still forwarded when a client is
+running; only a start that would open a window itself ends there with a message.
 
 ## Verification
 

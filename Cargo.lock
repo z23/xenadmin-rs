@@ -9320,6 +9320,7 @@ dependencies = [
  "serde_json",
  "uuid",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "xenadmin-core",
  "xenadmin-ui",
@@ -9337,6 +9338,7 @@ name = "xenadmin-ui"
 version = "0.20.0"
 dependencies = [
  "image",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

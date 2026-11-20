@@ -9,15 +9,26 @@ export XENADMIN_STATE_DIR="$check_state_dir"
 unset DISPLAY WAYLAND_DISPLAY
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-# The model must stay free of any toolkit.
-if cargo tree -p xenadmin-ui -e normal --locked | grep -E '(^|[^A-Za-z0-9_-])(rune|rune-kit|gpui)([^A-Za-z0-9_-]|$)'; then
+# The model must stay free of any toolkit. The names are matched as whole words between
+# characters that are neither a letter nor a digit, so that `gpui-kit`, `gpui-base`,
+# `gpui_macros` and `rune-kit` are found and `prune` is not. Each tree is taken first: a `cargo tree` that fails ends the
+# script instead of leaving nothing to search.
+model_tree="$(cargo tree -p xenadmin-ui -e normal --locked)"
+if grep -iE '(^|[^A-Za-z0-9])(rune|gpui)([^A-Za-z0-9]|$)' <<<"$model_tree"; then
     echo "xenadmin-ui depends on a UI toolkit" >&2
     exit 1
 fi
 # Gate G5 of docs/GPUI-MIGRATION.md: no crate of the Rune toolkit is in the workspace's
 # dependency tree, by any edge.
-if cargo tree --workspace --locked | grep -iE '(^|[^A-Za-z0-9_])rune([^A-Za-z0-9_]|$)'; then
+workspace_tree="$(cargo tree --workspace --locked)"
+if grep -iE '(^|[^A-Za-z0-9])rune([^A-Za-z0-9]|$)' <<<"$workspace_tree"; then
     echo "the workspace depends on a rune crate" >&2
+    exit 1
+fi
+# The first guard must be able to fire: the front end's own tree holds the Kit.
+desktop_tree="$(cargo tree -p xenadmin-desktop -e normal --locked)"
+if ! grep -qiE '(^|[^A-Za-z0-9])(rune|gpui)([^A-Za-z0-9]|$)' <<<"$desktop_tree"; then
+    echo "the toolkit guard does not find GPUI Kit in the tree of the crate that uses it" >&2
     exit 1
 fi
 # Debug builds report, when asked to, every record a view was given that carries a key the
@@ -79,3 +90,7 @@ cargo build --workspace --locked --message-format=json-render-diagnostics > "$ch
 for check_executable in xenadmin-rs host-probe; do
     test -x "$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --print-path "$check_executable")"
 done
+# The client as the packages are built from it is run once, without a window: asked for a
+# scene, a build without the scene harness refuses in one line with status 1 (see
+# packaging/smoke.py for what that shows and what it does not).
+python3 packaging/smoke.py "$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --print-path xenadmin-rs)"

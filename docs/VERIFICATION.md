@@ -14,10 +14,17 @@ The front end was moved from the Rune toolkit to GPUI Kit
 driven desktop sessions, the packaged AppImage runs, the operator's sessions on a real
 seat, the clean-install report) was obtained with the Rune interface. For the GPUI Kit
 front end the recorded evidence is: its model's tests, its window tests on the Kit's
-headless test platform, a render of every scene, and the headless runs against the lab of
-2026-11-19 ([report](reports/2026-11-19-gpui-live-headless.md)). It has not run in a real
-window, with a screen reader, or from a packaged build; the gate reports of 2026-11-19
-(`reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) give each criterion's state.
+headless test platform, a render of every scene, the headless runs against the lab of
+2026-11-19 ([successful paths](reports/2026-11-19-gpui-live-headless.md),
+[refusals, interruptions and recoveries](reports/2026-11-19-gpui-live-paths.md)), and two
+runs of the packages CI built at commit `e808a2f`, made the same day in virtual machines
+with software rendering and nobody at them: a clean installation on Ubuntu 24.04 and Arch
+([report](reports/2026-11-19-gpui-clean-install.md)) and a driven Wayland session with
+input injected at the machine's devices
+([report](reports/2026-11-19-gpui-vm-session.md)). No person has used it in a window, it
+has not drawn on a hardware GPU, and no person has used a screen reader with it; the gate
+reports of 2026-11-19 (`reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) give each
+criterion's state.
 
 The [verification traceability report](reports/2026-11-11-verification-traceability.md)
 maps each core scenario below, the console qualification list and the outage acceptance run
@@ -185,10 +192,15 @@ capture its own input devices and report the bytes to a listener on the isolated
 Headless output of the GPUI Kit front end (scene renders, tests on the Kit's test platform,
 and the headless runs of the shell against the lab) never substitutes for these runs, and a
 nested compositor still does not establish real seat, clipboard or Orca behaviour. The
-driven sessions recorded so far were of the Rune interface; the harness's element lookups
-were written for that interface's accessibility tree and have not been run against the
-GPUI Kit front end, whose driven session is still to be done (gate G3 of the
-[migration plan](GPUI-MIGRATION.md)).
+driven sessions recorded before 2026-11-19 were of the Rune interface; the harness's
+element lookups were written for that interface's accessibility tree and have not been
+run against the GPUI Kit front end. Its driven session of 2026-11-19 used a driver of its
+own, outside the repository: a compositor on the display of a virtual machine, keys and
+pointer injected at the machine's devices, the accessibility bus read to find controls,
+and a lab guest reporting its own input devices
+([report](reports/2026-11-19-gpui-vm-session.md)). That is a driven session in the sense
+of this section and, like a nested compositor, establishes nothing for a real seat with a
+person (gate G3 of the [migration plan](GPUI-MIGRATION.md)).
 
 `crates/xenadmin-desktop/tests/lab_live.rs` holds ignored tests that run the front end
 itself against the lab without a window: the application as `app::start` wires it (the

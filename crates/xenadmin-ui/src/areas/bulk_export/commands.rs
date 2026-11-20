@@ -12,9 +12,10 @@
 //!   ([`export::selected`]) or with what no choice in the wizard could fix
 //!   ([`export::hopeless`]).
 //! - `snapshot.export`: the snapshots selected on the Snapshots tab of the
-//!   shown VM, which that tab has the button for. It reads the tab's own
-//!   selection (a snapshot row is not a tree object); its target is those
-//!   rows, or the VM. `Hidden` when no VM's snapshots are shown or the
+//!   shown VM, in that tab's row of local actions (it was a button of the
+//!   tab's body until the review of gate G2, criterion 5). It reads the
+//!   tab's own selection (a snapshot row is not a tree object); its target
+//!   is those rows, or the VM. `Hidden` when no VM's snapshots are shown or the
 //!   target is something else; `Disabled` with the Rune refusal of the
 //!   selection. One snapshot is the single export of `transfers`, several
 //!   are the batch.
@@ -45,6 +46,8 @@ pub fn commands() -> Vec<CommandSpec> {
             .eligibility(|m, target| selection(m, target, ObjectKind::Template))
             .invoke(open_selection),
         CommandSpec::new(EXPORT_SNAPSHOTS.0, "Export selection…", AREA)
+            .local(TabId::Snapshots, 60)
+            .local_scopes(&[ObjectKind::Vm])
             .multi()
             .eligibility(selected_snapshots)
             .invoke(|m, _| {

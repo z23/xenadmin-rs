@@ -25,10 +25,12 @@
 //!   one path that runs before the application quits.
 
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use xenadmin_ui::launch::{self, Launch};
 use xenadmin_ui::model::APPLICATION_NAME;
@@ -41,6 +43,7 @@ use crate::intents::{self, Hook, Hooks};
 use crate::kit::*;
 use crate::shell::{self, ShellView};
 use crate::store::AppStore;
+use crate::wayland_activate::Activator;
 
 /// The application id of the main window. It must be the name of the
 /// installed desktop entry (`packaging/xenadmin-rs.desktop`), or the
@@ -49,6 +52,11 @@ pub const APP_ID: &str = "xenadmin-rs";
 
 /// The smallest size the main window can be given.
 pub const MINIMUM_SIZE: (f32, f32) = (800., 600.);
+
+/// How often, and how many times, the answers to a request to show the
+/// window are looked for.
+const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+const ACTIVATION_POLLS: usize = 40;
 
 /// The size the main window opens at.
 pub const DEFAULT_SIZE: (f32, f32) = (1440., 900.);
@@ -309,10 +317,6 @@ pub fn start(
     let consoles = ConsoleWindows::new(&store);
     let (hooks, last_resort) = hooks_over(&store, consoles.hooks(Hooks::default()));
     intents::install(&store, hooks.clone(), cx);
-    // The waker goes to the model, which restores the sessions that ask
-    // for it (never in a preview). Console frames have a waker of their
-    // own and do not come through here.
-    store.update(cx, |store, cx| store.connect_core(cx));
     let options = window_options(&title, window_size, cx);
     let (window, shell) = gpui_kit::open_window(options, cx, {
         let (store, hooks) = (store.clone(), hooks.clone());
@@ -325,6 +329,13 @@ pub fn start(
         }
     })
     .map_err(|error| format!("The main window did not open: {error}"))?;
+    // Only now that there is a window: the waker goes to the model, which
+    // restores the sessions that ask for it (never in a preview). A start
+    // that ends here without a window has logged in nowhere, and has
+    // nothing to log out of on a path that does not run the close.
+    // Console frames have a waker of their own and do not come through
+    // here.
+    store.update(cx, |store, cx| store.connect_core(cx));
     consoles.install(Some(window), cx);
     // The window went away without being asked to close.
     let quit = Rc::clone(&hooks.quit);
@@ -344,18 +355,161 @@ pub fn start(
     .detach();
     if let Some(activations) = activations {
         cx.spawn(async move |cx| {
-            // The token of the request cannot be handed to the toolkit: the
-            // window asks the compositor for activation itself.
-            while activations.recv().await.is_ok() {
+            // The token of the request cannot be handed to the toolkit, and
+            // the toolkit's own request is refused by some compositors
+            // (`wayland_activate`): on Wayland the request is made a second
+            // time, on the window's display, with the forwarded token.
+            let mut activator: Option<Result<Activator, String>> = None;
+            while let Ok(token) = activations.recv().await {
                 cx.update(|cx| {
                     cx.activate(true);
-                    let _ = cx.update_window(window, |_, window, _| window.activate_window());
+                    let _ = cx.update_window(window, |_, window, _| {
+                        window.activate_window();
+                        if activator.is_none() {
+                            activator = Some(Activator::from_window(window, APP_ID));
+                        }
+                    });
                 });
+                let Some(Ok(wayland)) = &mut activator else {
+                    continue;
+                };
+                wayland.request(token.as_deref());
+                // The compositor's answers arrive when the toolkit has read
+                // the display's socket: look a few times, for a second.
+                for _ in 0..ACTIVATION_POLLS {
+                    match wayland.poll() {
+                        Ok(true) => cx.background_executor().timer(ACTIVATION_POLL).await,
+                        Ok(false) => break,
+                        Err(error) => {
+                            eprintln!("The request to show the window failed: {error}");
+                            activator = Some(Err(error));
+                            break;
+                        }
+                    }
+                }
             }
         })
         .detach();
     }
     Ok((window, shell))
+}
+
+/// What is said when the environment names no display. Without one the
+/// toolkit starts headless: no window, no word, and a process that stays.
+pub const NO_DISPLAY: &str = "xenadmin-rs: no display: neither WAYLAND_DISPLAY nor DISPLAY is set. \
+Start the client from a Wayland or X11 session.";
+
+/// Whether the environment names a display to open the window on, as the
+/// toolkit reads it: a Wayland socket by name, or an X server. A Wayland
+/// connection inherited as a descriptor (`WAYLAND_SOCKET`) without
+/// `WAYLAND_DISPLAY` is none: the toolkit chooses its backend by these two
+/// variables only and would start without a window.
+pub fn names_a_display(variable: impl Fn(&str) -> Option<OsString>) -> bool {
+    ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|name| variable(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// Whether this start will open a window, and so needs a display: the
+/// owner of the state directory and a preview do. A start that was
+/// forwarded to the running client shows nothing itself, and one that
+/// failed says its own error.
+pub fn opens_a_window(launch: &Result<Launch, String>) -> bool {
+    matches!(launch, Ok(Launch::Owner(_) | Launch::Preview))
+}
+
+/// The plain words for a start the toolkit gave up with a panic: the
+/// display it could not reach, the font it could not find, or whatever
+/// else it said. Clean-install report of 2026-11-19 has the cases.
+pub fn start_failure(message: &str) -> String {
+    if message.contains("failed to resolve font") {
+        return "xenadmin-rs: no usable font is installed. The interface needs one of these \
+                families: Noto Sans, DejaVu Sans, Cantarell, Adwaita Sans, Ubuntu, Arial, \
+                Helvetica, Segoe UI."
+            .to_owned();
+    }
+    let what = if message.contains("failed to connect to") {
+        "the display could not be reached"
+    } else if message.contains("wl_seat") {
+        "the display cannot be used"
+    } else {
+        "the client could not start"
+    };
+    format!("xenadmin-rs: {what}: {message}")
+}
+
+/// What is added to the toolkit's words when no graphics backend took the
+/// window: they do not name the cause.
+pub fn window_failure(error: &str) -> String {
+    if error.contains("Failed to create surface") {
+        format!(
+            "{APPLICATION_NAME}: {error}\nNo Vulkan driver could be used. Install the Vulkan \
+             driver of the graphics card, or Mesa's software driver."
+        )
+    } else {
+        format!("{APPLICATION_NAME}: {error}")
+    }
+}
+
+/// What is done with a panic while the main window is not open yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartPanic {
+    /// Not the start's own: a panic of another thread (the core's, a
+    /// worker's). It is reported as usual, with its place, and the start
+    /// goes on.
+    Elsewhere,
+    /// A failure of the start that the toolkit is known to give up with
+    /// (the display, the seat, the font): this one plain line, status 1.
+    Known(String),
+    /// Any other panic of the starting thread: the usual report with its
+    /// place first, then this line, status 1.
+    Unknown(String),
+}
+
+/// Tells the panics of a start apart. `starting_thread`: whether the
+/// thread that panicked is the one that starts the application.
+pub fn start_panic(message: &str, starting_thread: bool) -> StartPanic {
+    if !starting_thread {
+        return StartPanic::Elsewhere;
+    }
+    let known = ["failed to resolve font", "failed to connect to", "wl_seat"]
+        .iter()
+        .any(|words| message.contains(words));
+    match known {
+        true => StartPanic::Known(start_failure(message)),
+        false => StartPanic::Unknown(start_failure(message)),
+    }
+}
+
+/// Until the main window is open, a panic of the toolkit on the thread
+/// that starts the application is a start that failed: it is said in one
+/// line and the process ends with status 1 ([`start_panic`]). A panic of
+/// another thread, any panic with `RUST_BACKTRACE` set, and every panic
+/// once `started` is set are reported as usual.
+fn say_start_failures_plainly(started: Arc<AtomicBool>) {
+    let usual = std::panic::take_hook();
+    let starting = std::thread::current().id();
+    std::panic::set_hook(Box::new(move |info| {
+        if started.load(Ordering::SeqCst) || std::env::var_os("RUST_BACKTRACE").is_some() {
+            return usual(info);
+        }
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("the toolkit did not say why");
+        let line = match start_panic(message, std::thread::current().id() == starting) {
+            StartPanic::Elsewhere => return usual(info),
+            StartPanic::Known(line) => line,
+            StartPanic::Unknown(line) => {
+                usual(info);
+                line
+            }
+        };
+        eprintln!("{line}");
+        std::process::exit(1);
+    }));
 }
 
 /// The whole program. Returns the exit status.
@@ -386,8 +540,18 @@ pub fn main() -> ExitCode {
             }
         };
     }
+    // A second start is forwarded to the running client whether or not
+    // this environment names a display: it shows nothing itself. Only a
+    // start that would open a window is refused for want of one, before
+    // anything is restored (the claim on the state directory ends with
+    // the process).
+    let launch = launch::prepare();
+    if opens_a_window(&launch) && !names_a_display(|name| std::env::var_os(name)) {
+        eprintln!("{NO_DISPLAY}");
+        return ExitCode::FAILURE;
+    }
     let (sender, activations) = unbounded::<Option<String>>();
-    let (model, activations) = match launch::prepare() {
+    let (model, activations) = match launch {
         Ok(Launch::Forwarded) => return ExitCode::SUCCESS,
         Ok(Launch::Preview) => match preview_model(&line) {
             Ok(model) => (model, None),
@@ -417,16 +581,27 @@ pub fn main() -> ExitCode {
     let window_size = line.size.unwrap_or(DEFAULT_SIZE);
     let failed = Rc::new(Cell::new(false));
     let report = failed.clone();
+    let started = Arc::new(AtomicBool::new(false));
+    say_start_failures_plainly(started.clone());
     gpui_kit::application()
         .with_assets(AppAssets)
         // The main window closes the application through its close path;
         // a console window closing must not.
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
-            if let Err(error) = start(model, window_size, activations, cx) {
-                eprintln!("{APPLICATION_NAME}: {error}");
-                report.set(true);
-                cx.quit();
+            match start(model, window_size, activations, cx) {
+                Ok(_) => started.store(true, Ordering::SeqCst),
+                Err(error) => {
+                    eprintln!("{}", window_failure(&error));
+                    report.set(true);
+                    // The toolkit forgets a quit asked for before its event
+                    // loop runs, and the process would stay: the quit is
+                    // asked for from a task, which the loop runs first.
+                    cx.spawn(async move |cx| {
+                        cx.update(|cx| cx.quit());
+                    })
+                    .detach();
+                }
             }
         });
     if failed.get() {
@@ -525,5 +700,105 @@ mod tests {
         let unknown = parse(&arguments("--scene no-such-scene")).expect("command line");
         let error = preview_model(&unknown).err().expect("refused");
         assert!(error.contains("no-such-scene") && error.contains("demo"));
+    }
+
+    #[test]
+    fn a_start_without_a_display_is_told_apart() {
+        let with = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+        assert!(!names_a_display(with(&[])));
+        assert!(!names_a_display(with(&[
+            ("WAYLAND_DISPLAY", ""),
+            ("DISPLAY", "")
+        ])));
+        assert!(names_a_display(with(&[("WAYLAND_DISPLAY", "wayland-1")])));
+        // The toolkit does not take an inherited connection for a display.
+        assert!(!names_a_display(with(&[("WAYLAND_SOCKET", "5")])));
+        assert!(names_a_display(with(&[
+            ("WAYLAND_SOCKET", "5"),
+            ("WAYLAND_DISPLAY", "wayland-1")
+        ])));
+        assert!(names_a_display(with(&[("DISPLAY", ":0")])));
+        assert!(NO_DISPLAY.contains("WAYLAND_DISPLAY") && NO_DISPLAY.contains("DISPLAY is set"));
+    }
+
+    #[test]
+    fn only_a_start_that_opens_a_window_needs_a_display() {
+        // A second start is forwarded from a shell without a display.
+        assert!(!opens_a_window(&Ok(Launch::Forwarded)));
+        assert!(opens_a_window(&Ok(Launch::Preview)));
+        // Its own error is what a failed start says.
+        assert!(!opens_a_window(&Err("no state directory".into())));
+    }
+
+    #[test]
+    fn only_the_starting_thread_s_panic_is_a_failed_start() {
+        let font = "failed to resolve font '.SystemUIFont' or any of the fallbacks: Arial";
+        // Another thread's panic is reported as usual, whatever it says.
+        assert_eq!(start_panic(font, false), StartPanic::Elsewhere);
+        assert_eq!(
+            start_panic("index out of bounds", false),
+            StartPanic::Elsewhere
+        );
+        for known in [
+            font,
+            "failed to connect to X server \":99\": Unknown connection error",
+            "Wayland compositor does not provide wl_seat",
+        ] {
+            assert_eq!(
+                start_panic(known, true),
+                StartPanic::Known(start_failure(known))
+            );
+        }
+        // A bug of the client keeps the place it panicked at.
+        assert_eq!(
+            start_panic("index out of bounds", true),
+            StartPanic::Unknown(start_failure("index out of bounds"))
+        );
+    }
+
+    /// The words are the toolkit's, as the clean-install check recorded them.
+    #[test]
+    fn the_failures_of_a_start_are_said_in_one_plain_line() {
+        let wayland = start_failure(
+            "failed to connect to Wayland compositor at /run/user/1000/wayland-none: No such file or directory (os error 2)",
+        );
+        assert!(
+            wayland.starts_with("xenadmin-rs: the display could not be reached: failed to connect")
+        );
+        assert!(wayland.contains("/run/user/1000/wayland-none"));
+        let x11 = start_failure("failed to connect to X server \":99\": Unknown connection error");
+        assert!(
+            x11.starts_with("xenadmin-rs: the display could not be reached:")
+                && x11.contains(":99")
+        );
+        let font = start_failure(
+            "failed to resolve font '.SystemUIFont' or any of the fallbacks: .ZedMono, .ZedSans, Helvetica, Segoe UI, Ubuntu, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans, Arial",
+        );
+        assert!(font.starts_with("xenadmin-rs: no usable font is installed."));
+        assert!(font.contains("DejaVu Sans") && !font.contains(".ZedMono") && !font.contains('\n'));
+        let seat = start_failure("Wayland compositor does not provide wl_seat");
+        assert_eq!(
+            seat,
+            "xenadmin-rs: the display cannot be used: Wayland compositor does not provide wl_seat"
+        );
+        assert_eq!(
+            start_failure("anything else"),
+            "xenadmin-rs: the client could not start: anything else"
+        );
+        let surface = window_failure(
+            "The main window did not open: Failed to create surface: Failed to create surface for any enabled backend: {}",
+        );
+        assert!(
+            surface.starts_with(APPLICATION_NAME)
+                && surface.contains("No Vulkan driver could be used")
+        );
+        assert!(!window_failure("The main window did not open: something else").contains("Vulkan"));
     }
 }

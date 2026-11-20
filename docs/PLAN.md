@@ -18,8 +18,9 @@ the evidence is in the spike reports, what stayed open is accepted in
 [decision 0006](decisions/0006-console-key-codes.md), and the operator directed on
 2026-11-17 that the migration be finished. The plan's "Status" section gives the state of
 each gate: the port is complete and verified on fixtures and headless, the supported areas
-were driven headless against the lab on 2026-11-19, and nothing of the new front end has
-yet run in a real window, with a screen reader or from a packaged build. Milestones M0 to
+were driven headless against the lab on 2026-11-19, and the packaged client has run in
+windows only in virtual machines, with software rendering and nobody at them; no person
+has used it in a window or with a screen reader. Milestones M0 to
 M6 below are kept as they were written, with Rune as the toolkit they name; where one of
 them speaks of a Rune window or a Rune fixture it describes how that milestone was first
 met, not the present front end.
@@ -318,7 +319,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Failure paths for that core on the lab | Recorded: a clean shutdown, a start, a snapshot create and a restore interrupted by a client restart; a coordinator power loss; a console across a reboot and a migration; XO unreachable with its VM running, by a detached NIC; a session closed on the host with no outage, with and without the user's access remaining; a console lost while a modifier key is held, by a migration and by a toolstack restart, through the core facade (the desktop's own reconnect was not driven with a key held) |
 | Tests for the core scenarios that had none | Done: V02, V03, V08, V09 and V10 have fixture tests for their stated observations and V06 and V20 their missing assertions ([traceability](reports/2026-11-11-verification-traceability.md)) |
 | Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |
-| Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |
+| Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)), and again for the GPUI Kit front end on 2026-11-19 ([report](reports/2026-11-19-gpui-clean-install.md)); nobody has used the window there |
 | A notice for hosts outside the qualified release | Done |
 | One real-seat pass | Done. The operator's sessions covered the window, resizing, a real inventory, console typing, pointer movement and clicks in a guest with a graphical desktop, and the performance charts. Clipboard exchange with a guest did not work for them and is recorded as experimental; screen readers are recorded as unsupported. An X session without Wayland was checked in a virtual machine with injected input ([report](reports/2026-11-11-clean-install.md)), not by a person |
 | Release mechanics | Done: a [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that builds the packages and leaves a draft pre-release, and a first [performance baseline](reports/2026-11-11-performance-baseline.md) |

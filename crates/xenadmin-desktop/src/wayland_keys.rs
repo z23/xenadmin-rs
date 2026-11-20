@@ -52,6 +52,13 @@ pub enum SeatEvent {
         locked: u32,
         group: u32,
     },
+    /// How the compositor wants a held key repeated: `rate` repeats a
+    /// second (0: none) after `delay` milliseconds. `wl_keyboard` reports a
+    /// held key once; repeating it is the client's work.
+    RepeatInfo {
+        rate: i32,
+        delay: i32,
+    },
 }
 
 struct KeyboardState {
@@ -157,6 +164,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for KeyboardState {
                     group,
                 });
             }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                state.events.push(SeatEvent::RepeatInfo { rate, delay });
+            }
             _ => {}
         }
     }
@@ -178,14 +188,6 @@ pub struct ForeignKeyboard {
 }
 
 impl ForeignKeyboard {
-    /// Connect with `WAYLAND_DISPLAY`. This is a separate client, not route A.
-    /// It can show whether a compositor emits `wl_keyboard::Key` at all.
-    pub fn connect_own() -> Result<Self, String> {
-        let connection = Connection::connect_to_env()
-            .map_err(|error| format!("WAYLAND_DISPLAY connection failed: {error}"))?;
-        Self::from_connection(connection)
-    }
-
     /// Bind a second keyboard on the Wayland display a GPUI window already uses.
     ///
     /// The window must be a live Wayland window for the life of this value.
@@ -253,22 +255,14 @@ impl ForeignKeyboard {
 
     /// Send queued requests. A foreign display must flush; it must not
     /// roundtrip, because roundtrip would read the owner's socket.
+    /// Sends the queued requests. A socket that would block is no failure:
+    /// the requests stay queued and leave with a later flush, this
+    /// listener's or the toolkit's.
     pub fn flush(&self) -> Result<(), String> {
-        self.connection
-            .flush()
-            .map_err(|error| format!("Wayland flush failed: {error}"))
-    }
-
-    /// Read this connection's socket until the seat keyboard is bound.
-    /// Foreign displays must not call this.
-    pub fn roundtrip_own(&mut self) -> Result<(), String> {
-        self.queue
-            .roundtrip(&mut self.state)
-            .map_err(|error| format!("Wayland roundtrip failed: {error}"))?;
-        self.queue
-            .roundtrip(&mut self.state)
-            .map_err(|error| format!("Wayland roundtrip failed: {error}"))?;
-        Ok(())
+        match self.connection.flush() {
+            Err(error) if !would_block(&error) => Err(format!("Wayland flush failed: {error}")),
+            _ => Ok(()),
+        }
     }
 
     pub fn keyboard_bound(&self) -> bool {
@@ -302,23 +296,18 @@ impl ForeignKeyboard {
     }
 }
 
+/// Whether a flush only could not write now.
+fn would_block(error: &wayland_client::backend::WaylandError) -> bool {
+    matches!(
+        error,
+        wayland_client::backend::WaylandError::Io(io)
+            if io.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_missing_wayland_display_is_an_error() {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            return;
-        }
-        let Err(error) = ForeignKeyboard::connect_own() else {
-            panic!("an absent WAYLAND_DISPLAY must fail");
-        };
-        assert!(
-            error.contains("WAYLAND_DISPLAY"),
-            "unexpected error: {error}"
-        );
-    }
 
     #[test]
     #[allow(unsafe_code)]
@@ -330,6 +319,18 @@ mod tests {
             panic!("a null display must fail");
         };
         assert!(error.contains("null"), "{error}");
+    }
+
+    #[test]
+    fn a_flush_that_would_block_is_not_the_end_of_the_listener() {
+        use std::io::{Error, ErrorKind};
+        use wayland_client::backend::WaylandError;
+        assert!(would_block(&WaylandError::Io(Error::from(
+            ErrorKind::WouldBlock
+        ))));
+        assert!(!would_block(&WaylandError::Io(Error::from(
+            ErrorKind::BrokenPipe
+        ))));
     }
 
     #[test]

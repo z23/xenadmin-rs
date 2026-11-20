@@ -79,8 +79,8 @@ Keep these workspace boundaries small:
 
 The front end was moved from Rune to GPUI Kit; the
 [migration plan](GPUI-MIGRATION.md) owns the sequence, the target layout and the rules, and
-its "Status" section says what of the new front end is established (nothing of it has run
-in a real window yet). Until the cutover `crates/xenadmin-desktop` was the Rune front end
+its "Status" section says what of the new front end is established (it has run in windows
+only in virtual machines, with software rendering and nobody at them). Until the cutover `crates/xenadmin-desktop` was the Rune front end
 and the GPUI one was `crates/xenadmin-gpui`; the Rune crate is removed and the GPUI crate
 has taken its name. Between the model and the front end the ownership is:
 
@@ -327,7 +327,9 @@ slots use unique leases, which the close report carries, so a late report about 
 window cannot affect a new console in the same slot. Closing releases input and drops the
 stream; closing the main window closes all slots. (In the Rune front end this was
 `console_windows.rs`, with eight lazily registered secondary windows.) Opening, focus
-between real windows and fullscreen are established on the Kit's test platform only.
+between real windows and fullscreen are established on the Kit's test platform and, once,
+on sway in a virtual machine with injected input
+([report](reports/2026-11-19-gpui-vm-session.md)).
 
 RRD polling has independent scheduling and bounds. Stop unnecessary high-resolution polling
 for hidden views. Show unavailable samples as gaps. Management controls remain available

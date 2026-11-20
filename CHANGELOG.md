@@ -98,10 +98,32 @@ again for that, because no published version reads format 5.
     window (down to 513 by 652) does not exist. A separate console window can be as small
     as 480 by 640.
   - Preferences are read from the existing file. The width of the old details pane is
-    read and no longer written, as there is no such pane.
+    read and no longer written, as there is no such pane. The state directory of a
+    released client (0.17 and 0.19 were tried, on copies) is read without loss
+    ([report](docs/reports/2026-11-19-gpui-upgrade-state.md)).
+  - "Reduce animation" in Options still applies. The desktop's own reduced-motion
+    setting, which the old interface followed as well, is no longer followed: the
+    toolkit reads none.
+  - The command line keeps `--version`, `--help` and `--demo`. The options that belonged
+    to the old toolkit (`--html`, `--video`, `--frames`, `--script`, `--native`,
+    `--list-scenes` and the like) are gone, and `--theme` and `--size`, which 0.19.0
+    accepted on an ordinary start, now apply to `--demo` only: on an ordinary start the
+    client prints its usage and ends with status 2. The appearance is set in Options.
+  - Started where no display is named (neither `WAYLAND_DISPLAY` nor `DISPLAY`), the
+    client says so in one line and ends. A second start from such a shell is still
+    passed to the client that is running, whose window it asks to show. When the
+    display cannot be reached, has no seat, or no usable font or Vulkan driver is found,
+    it says which in one line and ends with status 1; any other failure of the start
+    keeps the usual report with the place it happened at.
+  - A font of one of these families must be installed: Noto Sans, DejaVu Sans, Cantarell,
+    Adwaita Sans, Ubuntu, Arial, Helvetica or Segoe UI. The client embeds none and
+    follows no fontconfig alias; the [installation guide](docs/INSTALLATION.md) names
+    the packages. The archives therefore carry no font notices any more.
   - Accessibility: screen readers are not supported, as before. The new interface gives
-    its elements roles, names and descriptions, but no screen reader has been run with
-    it, and the statement stays "not supported" until such a run is recorded.
+    its elements roles, names and descriptions. Orca was started with it once, in a
+    virtual machine, and what it would speak for the demo's views was read from its log;
+    no person has used a screen reader with it, and the statement stays "not supported"
+    until such a run is recorded.
 
   How far this is verified, which is less than for the interface it replaces: every area
   of the old interface is ported, and the new one passes its model's tests, its window
@@ -113,8 +135,22 @@ again for that, because no published version reads format 5.
   snapshots, performance, host maintenance with a real evacuation, live migration both
   ways, disconnecting and connecting again and a second start, and a client closed in the
   middle of an operation
-  ([report](docs/reports/2026-11-19-gpui-live-headless.md)). See the known issues for
-  what has not been shown.
+  ([report](docs/reports/2026-11-19-gpui-live-headless.md)); and through their refusals,
+  interruptions and recoveries: reboot, suspend and the force actions, a batch that
+  stops on a failure, the refused reviews, a migration with its disks and its
+  cancellation, a halted VM's disks moved, a snapshot with memory, the console in a
+  second window and the clipboard typed as keys, a member's toolstack restart, reboot
+  and shutdown through maintenance, and recovery after a restart of the coordinator's
+  toolstack, a member that lost power and a certificate that is not the pinned one
+  ([report](docs/reports/2026-11-19-gpui-live-paths.md)). On the same day the packages CI
+  built from the branch (commit `e808a2f`) were run in windows for the first time, in
+  virtual machines with software rendering and nobody at them: installed on clean Ubuntu
+  24.04 and Arch systems ([report](docs/reports/2026-11-19-gpui-clean-install.md)), and
+  driven in a Wayland session on sway with keys and pointer injected at the machine's
+  devices, through connecting to the lab, the recovery gate, consoles, the clipboard,
+  the file chooser, a second window and fullscreen
+  ([report](docs/reports/2026-11-19-gpui-vm-session.md)). See the known issues for what
+  has not been shown.
 
 - Host maintenance and moving a VM within its pool join the supported part
   ([feature scope](docs/FEATURES.md)): entering and leaving maintenance with evacuation,
@@ -213,9 +249,17 @@ again for that, because no published version reads format 5.
   refused before the password is sent (issue 2).
 - Starting the application with one of the options that render it without a window
   (`--html`, `--video`, `--frames`, `--script` and the like) still restored a saved
-  session and asked the keyring for its password. Those runs are now previews, as a run
-  with `--snap` was: no session is restored and the running desktop is not claimed
-  (issue 1).
+  session and asked the keyring for its password. Those options went with the old
+  toolkit and are now refused; the ones that remain (`--demo`, and in development
+  builds `--scene` with `--snap` and `--tree`) are previews: no session is restored and
+  the running desktop is not claimed (issue 1).
+- A `preferences.json` that the client cannot read (one value of a kind it does not
+  accept, a truncated file) was replaced by the defaults at the first close, and the
+  saved searches, external tools, graph presets and hidden history it held were gone,
+  with no message; 0.19.0 does the same. The file is now kept beside the new one as
+  `preferences.json.unreadable`. So is a file that can be read but whose saved searches,
+  graph presets or external tools the client does not accept (those of a newer client,
+  a duplicate name), which are read as empty. The window still says nothing about it.
 - Editing a connection's address kept the certificate pin of the old address and
   attached it to the new one. A connection's saved pins and certificate details are
   now dropped when its address changes, so the host at the new address has to be
@@ -245,28 +289,66 @@ again for that, because no published version reads format 5.
 
 ### Known issues
 
-The new interface has not been shown in a real window. In particular:
+No person has used the new interface in a window. It has run in windows only in virtual
+machines, with software rendering, input injected by a script and nobody at them
+([clean installation](docs/reports/2026-11-19-gpui-clean-install.md),
+[driven session](docs/reports/2026-11-19-gpui-vm-session.md)). In particular:
 
-- Nothing of it has run on a compositor. Typing into a console in a Wayland session goes
-  through a keyboard path (key codes read by a second listener on the display,
-  [decision 0006](docs/decisions/0006-console-key-codes.md)) that is compiled into the
-  client and has never run with a console; in the headless runs keys reached a guest
-  through the toolkit's test events. The clipboard, the file chooser of the desktop
-  portal, bringing the window forward by starting the client a second time, fullscreen
-  and the window's own decorations are established on the toolkit's test platform only.
+- It has not drawn on a hardware GPU, and the only compositor it has run on is sway 1.12:
+  not Hyprland, GNOME or KDE. Typing into a console in a Wayland session goes through a
+  keyboard path (key codes read by a second listener on the display,
+  [decision 0006](docs/decisions/0006-console-key-codes.md)) that has carried injected
+  keys to a lab guest on sway, exactly and under a second layout, and has never been used
+  with a real keyboard. The clipboard with the window focused, the file chooser of the
+  desktop portal, fullscreen and the window's decorations (drawn by the compositor) were
+  observed in that session and nowhere else.
+- Starting the client a second time asks the compositor to show the running window. On
+  sway that marks the window urgent and focuses it only where the compositor's policy
+  allows; elsewhere it has not been tried.
+- In an X session the window has been opened, with scripted input, and no console was
+  tried there: its keyboard path (the toolkit's keystrokes, with codes looked up on the
+  US layout) is experimental and has not run in a window. Whether the desktop's busy
+  indication ends when the window appears in an X session has not been looked at.
 - Over a console the local pointer stays visible and the guest's own cursor is not drawn.
-- No screen reader has been run. The reason a menu item is disabled is in its name or a
-  tooltip, not in an accessible description.
-- No packaged build of it (archive or AppImage) has been installed or run, on the
-  development workstation or on a clean system, and the recovery gate (find the Xen
-  Orchestra VM, start it and use its console with Xen Orchestra down) has not been
-  repeated with one.
+- No person has used a screen reader with it. The reason a menu item is disabled is in
+  its name or a tooltip, not in an accessible description.
+- The packages that have been installed and run (archive and AppImage, on clean Ubuntu
+  24.04 and Arch systems, and the AppImage through the recovery gate: find the Xen
+  Orchestra VM, start it and use its console with Xen Orchestra down) are those CI built
+  from the branch at commit `e808a2f`, in the virtual machines above. They lack what was
+  fixed afterwards: in them a second start often shows nothing, a held key does not
+  repeat in a console, "Reduce animation" has no effect, and a start without a display,
+  a seat, a font or a Vulkan driver panics, stays silent or does not end. No package
+  holds those fixes yet, and the recovery gate has not been run by a person or on a
+  release artifact.
+- No keyring was present in any run of the new interface: a saved password and
+  connection at startup have not been tried with it.
 - The lab runs of 2026-11-19 were headless: the interface was driven without a window.
-  They were repeated, and passed, after the last fixes to the interface and after the old
-  one was removed.
-- Recovery of a connection after a lost host, a restarted toolstack or a changed
-  coordinator has not been rerun through the new interface; the core's behaviour there is
-  unchanged and was recorded with earlier versions.
+  Still not run through the new interface: a coordinator change and maintenance of the
+  coordinator, the host's own refusal of an evacuation, and an operation in flight while
+  the coordinator's toolstack restarts; the core's behaviour there is unchanged and was
+  recorded with earlier versions.
+- Found in those runs and not changed
+  ([report](docs/reports/2026-11-19-gpui-live-paths.md), findings;
+  [report](docs/reports/2026-11-19-gpui-vm-session.md), findings 3 and 4):
+  - the review that cancels a running migration goes stale about once a second, so it
+    can be refused and must then be opened and confirmed again at once;
+  - a member that has lost power looks like an enabled server for about ten minutes, and
+    then only the General tab says "Host live = No"; the tree marks maintenance,
+    restarting and switched off all as "Disabled";
+  - while connected there is no way to review the certificate of a pool member whose
+    console is refused for it: disconnect, then Connect with the member's endpoint under
+    Certificate options;
+  - the password field is emptied after each refused attempt and after a certificate
+    review;
+  - the menu bar is not opened by F10 or Alt with a letter;
+  - a host's refusal is shown by its code, for example `VM_REQUIRES_SR`.
+- The Snapshots tab's row of actions has seven commands and wraps in an 800 wide window
+  at an interface size above 100%, or in a font slightly wider than the one it was
+  measured in (Adwaita Sans left 4 pixels). The part above the table then gives way
+  for the table: the "Show list" switch is partly hidden until that part is scrolled,
+  and it shows no scrollbar. Selecting a snapshot no longer moves the table (seen on
+  the test platform and in the headless scene tool at 780 by 600, not in a window).
 - The experimental areas are verified in the new interface on fixtures and by rendering
   only. The lab runs their entries in this changelog cite were made through the Rune
   interface or through the core's own scenarios

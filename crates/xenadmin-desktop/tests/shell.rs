@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use xenadmin_desktop::intents::{self, Hooks};
 use xenadmin_desktop::kit::testing::{
-    ElementSnapshot, TestAppContext, TestAppContextExt as _, TestQueryExt as _, TestWindowExt as _,
-    VisualTestContext,
+    ElementSnapshot, TestAppContext, TestAppContextExt as _, TestEventExt as _, TestQueryExt as _,
+    TestWindowExt as _, VisualTestContext,
 };
 use xenadmin_desktop::kit::*;
 use xenadmin_desktop::scenes::gallery::{DIALOG, Lab, LabRef, TABLE};
@@ -1366,6 +1366,26 @@ fn the_theme_follows_the_appearance_preference_and_keeps_the_accent(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+fn the_applications_window_applies_the_option_reduce_animation(cx: &mut TestAppContext) {
+    let scene = open(cx);
+    // A scene's window leaves what its harness asked for, whatever the
+    // option says: a capture shows the final state.
+    assert!(cx.update(|cx| cx.reduce_motion()));
+    assert!(!model(cx, &scene, |m| m.preferences.options.reduced_motion));
+    // The application's window is the one that follows the desktop.
+    on(&mut *cx, &scene, |window, cx| {
+        scene
+            .view
+            .update(cx, |shell, cx| shell.follow_system_appearance(window, cx))
+    });
+    assert!(!cx.update(|cx| cx.reduce_motion()));
+    model_side(cx, &scene, |m| m.preferences.options.reduced_motion = true);
+    assert!(cx.update(|cx| cx.reduce_motion()));
+    model_side(cx, &scene, |m| m.preferences.options.reduced_motion = false);
+    assert!(!cx.update(|cx| cx.reduce_motion()));
+}
+
+#[gpui_kit::test]
 fn the_zoom_shortcuts_apply_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let scene = open(cx);
     let scale =
@@ -1546,6 +1566,76 @@ fn the_view_switcher_and_the_search_box_drive_the_model(cx: &mut TestAppContext)
             window.find(pane::EMPTY_KEY).label(),
             Some("No saved searches.")
         );
+    });
+}
+
+/// The search box's own clear button, pressed with the pointer: the text is
+/// empty, the model's filter is empty and every row is back. The button is
+/// the Kit's (`Input::cleanable`); it is in the tree only while the box has
+/// text.
+#[gpui_kit::test]
+fn the_search_box_clear_button_empties_the_search_and_restores_every_row(cx: &mut TestAppContext) {
+    /// The clear button of the search box: the Kit keys it `clean`.
+    fn clear_button(window: &mut Window) -> Option<ElementSnapshot> {
+        window.elements().into_iter().find(|element| {
+            let path = element.path();
+            let Some((last, before)) = path.split_last() else {
+                return false;
+            };
+            *last == id("clean") && before.contains(&id(pane::SEARCH_KEY))
+        })
+    }
+
+    let scene = open(cx);
+    let every_row: Vec<String> = model(cx, &scene, nav::rows)
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert!(every_row.len() > 2, "the demonstration has rows to hide");
+    // An empty box has nothing to clear.
+    on(cx, &scene, |window, _| {
+        assert!(clear_button(window).is_none());
+    });
+    on(cx, &scene, |window, cx| {
+        window.click(pane::SEARCH_KEY, cx);
+        window.input("xcp-lab-02", cx);
+    });
+    assert_eq!(model(cx, &scene, |m| m.nav.filter.clone()), "xcp-lab-02");
+    let narrowed = model(cx, &scene, nav::rows);
+    assert!(narrowed.len() < every_row.len());
+    on(cx, &scene, |window, _| {
+        assert!(try_tree_row(window, "xcp-lab-01").is_none());
+    });
+    // The pointer goes to the button and presses it.
+    on(cx, &scene, |window, cx| {
+        let button = clear_button(window).expect("the search box has a clear button");
+        let at = button.bounds().center();
+        let viewport = window.viewport_size();
+        assert!(
+            at.x > px(0.) && at.y > px(0.) && at.x < viewport.width && at.y < viewport.height,
+            "the clear button is on screen"
+        );
+        assert!(
+            window.find(pane::SEARCH_KEY).bounds().contains(&at),
+            "the clear button is inside the search box"
+        );
+        window.pointer_move(at, None, cx);
+        window.render_frame(cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    });
+    assert_eq!(model(cx, &scene, |m| m.nav.filter.clone()), "");
+    let restored: Vec<String> = model(cx, &scene, nav::rows)
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(restored, every_row);
+    on(cx, &scene, |window, _| {
+        assert_eq!(window.find(pane::SEARCH_KEY).value(), Some(""));
+        assert!(try_tree_row(window, "xcp-lab-01").is_some());
+        assert!(try_tree_row(window, "xcp-lab-02").is_some());
+        assert!(window.try_find(pane::EMPTY_KEY).is_none());
+        assert!(clear_button(window).is_none());
     });
 }
 

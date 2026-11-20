@@ -24,5 +24,10 @@ zeroize.workspace = true
 # Only a dev-dependency turns it on.
 test-support = []
 
+[dev-dependencies]
+# upgrade_tests.rs counts the rows of a journal the released client wrote,
+# before and after the core has opened it. The version the core has.
+rusqlite = { version = "0.37", features = ["bundled"] }
+
 [lints]
 workspace = true

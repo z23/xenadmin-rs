@@ -1,11 +1,16 @@
 # Console key codes on GPUI
 
-Status on 2026-11-19, after the cutover of the code: the decision and its accepted limits stand as
-written below, and no later run has closed or confirmed any of them. Route A is in the client
-(`crates/xenadmin-desktop/src/wayland_keys.rs` and `console/keys.rs`): it compiles there and has no
-test, and it has never run with a console, because nothing of the GPUI front end has run in a real
-window since the spike. In the headless lab runs of 2026-11-19 keys reached a guest through the
-Kit's test key events, which is the path without the listener
+Status on 2026-11-19, after the cutover of the code and the runs of that day: the decision stands as
+written below. Route A is in the client (`crates/xenadmin-desktop/src/wayland_keys.rs` and
+`console/keys.rs`). It ran with a console for the first time on 2026-11-19, in a virtual machine
+with injected input and a software renderer, on sway 1.12
+([session report](../reports/2026-11-19-gpui-vm-session.md), section D); what that run says about
+each accepted limit is recorded under "Accepted limits" below. It has not run with a person's
+keyboard, and on no compositor other than Hyprland 0.56.2 (the spike, without a console) and sway
+1.12. The listener itself has no test; its key repeat, which the session found missing (a held key
+arrived in the guest as one press), has unit tests in `console/keys.rs` and was confirmed in the
+same machine with a build of the fix. In the headless lab runs of 2026-11-19 keys reached a guest
+through the Kit's test key events, which is the path without the listener
 ([report](../reports/2026-11-19-gpui-live-headless.md)). Where the text below speaks of the Rune
 console or the Rune binary in the present tense, it is of 2026-11-14: the Rune crate has since been
 removed, and the crate `xenadmin-gpui` it names is `crates/xenadmin-desktop`.
@@ -74,3 +79,23 @@ Still not shown on a real seat, and not a reason to wait:
 Eight windows did map. The evidence is in
 `docs/reports/2026-11-14-gpui-spike-s1.md`. The Rune binary remains the
 released artifact until cutover.
+
+Recorded on 2026-11-19, from the driven session in a virtual machine
+([report](../reports/2026-11-19-gpui-vm-session.md), "What the session says about the gates
+and about decision 0006"). It was sway 1.12 on the display of a QEMU machine, software
+rendering, every key and pointer event injected at the machine's devices by a script, with the
+AppImage CI built at commit `e808a2f`. None of it is a real seat with a person, and none of it
+was on Hyprland, so each limit above stays open for that; what the session adds:
+
+- Pointer: on sway the whole session was driven by pointer presses, and a lab guest recorded
+  the button presses made on its console. Pointer motion inside a guest was not examined.
+- The local cursor and the guest's cursor were not examined.
+- Fit and actual size were looked at in pictures of the machine's display; pixels were not
+  compared.
+- Clipboard: with the window focused, text was copied out and pasted in. Without focus it was
+  not tried.
+- Fullscreen was entered and left twice, on the main window and on a console window, as the
+  compositor reported it.
+- A lab guest recorded every key of a test line from its own input device, and recorded the
+  same key codes when the compositor's layout was German. Ctrl+Alt+F1 was sent through the
+  console's button and arrived; no such chord was pressed at the keyboard.

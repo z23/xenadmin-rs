@@ -1,4 +1,21 @@
-//! Spike S1 on a real Wayland seat.
+//! Spike S1 on a real Wayland seat, kept for a later seat run.
+//!
+//! RUNNING THIS OPENS TWO WINDOWS on the Wayland session it is started in
+//! and injects key presses into that session through Hyprland
+//! (`hyprctl`). Run it only on a seat whose owner asked for the run. No
+//! test and no script of the repository runs it; `cargo build --workspace`
+//! does not build it (`cargo build -p xenadmin-desktop --example s1_seat`
+//! does).
+//!
+//! What it is kept for: the limits that
+//! `docs/decisions/0006-console-key-codes.md` records as still open for the
+//! console's key codes (route A, `src/wayland_keys.rs`), which need no
+//! guest: that the codes stay the same under a second host layout, that
+//! Ctrl+Alt+F2 is delivered, and that held keys are released on
+//! deactivation and on close as they are on Leave. It exercises the same
+//! listener the client uses, without the client. Whether a guest records
+//! a key is a run of the client itself, not of this probe. The first run is
+//! in `docs/reports/2026-11-14-gpui-spike-s1.md`.
 //!
 //! Opens two GPUI windows, binds a second `wl_keyboard` on the first window's
 //! display, and asks Hyprland to inject physical keys with `send_key_state`.
@@ -182,6 +199,11 @@ impl Probe {
             } => {
                 self.shared.push(format!(
                     "seat target={target} modifiers depressed={depressed:#x} latched={latched:#x} locked={locked:#x} group={group}"
+                ));
+            }
+            SeatEvent::RepeatInfo { rate, delay } => {
+                self.shared.push(format!(
+                    "seat target={target} repeat_info rate={rate} delay={delay}"
                 ));
             }
         }
