@@ -510,6 +510,70 @@ const REVIEWED: &[Reviewed] = &[
     ),
 ];
 
+/// What the `*` of a row may stand for. A row's key with a `*` is the
+/// class of every control whose key begins the same, so a new control
+/// with that prefix (`metric-preset-rename-…`, `metrics-source-reset`)
+/// would be passed as reviewed. For the rows named here the keys are
+/// those the fixtures of the scenes make, each listed; for every other
+/// row with a `*` the generated part must be the id of a record (a UUID).
+const GENERATED: &[(&str, &[&str])] = &[
+    (
+        "activity-pool*",
+        &[
+            "activity-pool",
+            "activity-pool-all",
+            "activity-pool-10000000-0000-0000-0000-000000000001",
+        ],
+    ),
+    ("metric-preset-*", &["metric-preset-CPU and memory"]),
+    (
+        "metric-preset-remove-*",
+        &["metric-preset-remove-CPU and memory"],
+    ),
+    (
+        "metrics-source-*",
+        &[
+            "metrics-source-cpu0",
+            "metrics-source-filter",
+            "metrics-source-memory",
+            "metrics-source-vbd_xvda_read",
+            "metrics-source-vif_0_rx",
+        ],
+    ),
+    (
+        "metrics-window-*",
+        &[
+            "metrics-window-600",
+            "metrics-window-7200",
+            "metrics-window-604800",
+            "metrics-window-31536000",
+        ],
+    ),
+    (
+        "search-group-*",
+        &[
+            "search-group-Folder",
+            "search-group-Name",
+            "search-group-Pool",
+            "search-group-Type",
+        ],
+    ),
+];
+
+/// Whether a key is one its row's `*` may stand for ([`GENERATED`]).
+fn generated(row: &str, key: &str) -> bool {
+    let Some((prefix, suffix)) = row.split_once('*') else {
+        return true;
+    };
+    match GENERATED.iter().find(|(listed, _)| *listed == row) {
+        Some((_, keys)) => keys.contains(&key),
+        None => key
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+    }
+}
+
 /// The path segments under which a control is in an allowed place.
 const ALLOWED: &[&str] = &[
     "app-menu-bar",
@@ -965,6 +1029,11 @@ fn every_control_outside_the_allowed_places_is_reviewed(cx: &mut TestAppContext)
     let mut unlisted = Vec::new();
     for (found, (label, scene)) in &findings.seen {
         match entry(found) {
+            Some(index) if !generated(REVIEWED[index].key, &found.key) => unlisted.push(format!(
+                "{} | {} | {label:?} | first in scene {scene} | it has the prefix of the row \
+                 `{}` and is not one of the keys that row stands for (GENERATED)",
+                found.place, found.key, REVIEWED[index].key
+            )),
             Some(index) => {
                 used.insert(index);
             }
