@@ -99,8 +99,9 @@ among it a coordinator change through the interface and the keyring). The packag
 has run in windows only in virtual machines, with software rendering and nobody at them:
 on clean Ubuntu 24.04 and Arch systems
 ([report](reports/2026-11-19-gpui-clean-install.md)) and in a driven Wayland session on
-sway, where its keyboard path into a console, its clipboard, file chooser, window
-activation, fullscreen and decorations were observed with injected input
+sway, where its keyboard path into a console, its clipboard, file chooser, fullscreen and
+decorations were observed with injected input, and where a second start often showed
+nothing until a build of the fix, which no package holds, marked the window urgent
 ([report](reports/2026-11-19-gpui-vm-session.md)). No person has used it in a window, on
 no hardware GPU and on no other compositor. Until the operator's run at a desk is
 recorded, a build from the main branch is not yet what this list describes.

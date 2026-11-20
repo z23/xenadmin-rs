@@ -80,8 +80,9 @@ M0 resolves these questions without changing the product goal:
 - Which machine-readable API export matches the chosen host lineage and supports reproducible Rust bindings?
 - Which Rune changes, if any, are needed for Wayland dialogs, physical console input, and Orca?
   (Asked of Rune at the time. For GPUI Kit the same three are open in a different way:
-  the portal file chooser and the Wayland key path of the console have not run in a real
-  window, and no screen reader has been run; see the "Status" section of the
+  the portal file chooser and the Wayland key path of the console have run in a window
+  only in a virtual machine with injected input, and no person has used a screen reader
+  (Orca was started there and its log read); see the "Status" section of the
   [migration plan](GPUI-MIGRATION.md).)
 - Which release format works on the target systems, including software-rendered workstations?
 

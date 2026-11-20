@@ -86,8 +86,10 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   Ubuntu 24.04 and Arch systems
   ([report](docs/reports/2026-11-19-gpui-clean-install.md)). In that session the Wayland
   key path for console key codes (decision 0006, route A) carried injected keys to a lab
-  guest, and the clipboard with the window focused, the portal file chooser, activation of
-  the window by a second start, fullscreen and server-side decorations were observed.
+  guest, and the clipboard with the window focused, the portal file chooser, fullscreen
+  and server-side decorations were observed. A second start often showed nothing with
+  that package; with a build of the fix, not a CI package, it marked the window urgent on
+  sway and focused it only where sway's policy allows.
   None of that is established for a real keyboard, for Hyprland, GNOME or KDE, or for X11
   with a console; the listener of route A has no test.
 - No person has used a screen reader with it. In the same virtual machine the client was on

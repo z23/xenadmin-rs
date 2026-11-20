@@ -37,8 +37,10 @@ Done:
   coordinator's toolstack, a lost member and a certificate that is not the pinned one
   ([report](reports/2026-11-19-gpui-live-paths.md)). The scenarios of the first report were all repeated, passing, after the cutover (commit
   `56fedbd`) and again on the tree with the day's branches merged (commit `a6ccb33`), there with
-  three guest-level scenarios of the second report; the scenarios that restart, reboot or cut the
-  power of a server were run once each and not repeated.
+  three guest-level scenarios of the second report; the scenarios that reboot, shut down or cut the
+  power of the member passed in the one run each had; the two that restart a toolstack were run three
+  times each (the member's failed twice and passed at the third run, the coordinator's passed,
+  failed and passed); none of these was repeated on the merged tree.
 - Verified in virtual machines on 2026-11-19, with the archive and the AppImage that CI built at
   commit `e808a2f`, software rendering, nobody at them:
   - a clean installation on Ubuntu 24.04 and on Arch: checksums, installer, the window opened under
@@ -72,8 +74,15 @@ Not established, and to be said wherever the front end's status is given:
 - No person has used a screen reader with it, and nobody heard one: Orca's output was read from its
   log, for the demo's views.
 - No keyring: a saved password and connection at startup have not been tried with the new front end.
-- No package holds the fixes above, and the tree as merged is not pushed: CI has built `e808a2f`
-  only. The corrected package lists of the installation guide were not installed alone on an
+- No package holds the fixes above, and the tree as merged is not pushed: CI has built no commit
+  later than the published head `02bfe4e`, and the packages that were installed and run are those
+  of `e808a2f` (the two differ in documents and one test file).
+- No build of the merged tree has opened a window. Each fix was seen in a build of its own branch
+  before the merge: the second start and the key repeat in a build of `8d6ec1d` on sway, the
+  start-up messages once, in a debug build, in the Arch machine. The merged tree combines
+  three branches' changes to the client's start, and the review of 2026-11-20 changed the start,
+  the key repeat's pump and the layout of a tab body again: all of that is held by tests on the
+  headless platform only. The corrected package lists of the installation guide were not installed alone on an
   untouched image.
 - The recovery gate has not been run on a release artifact (there is none), nor by a person.
 - Live, still missing: a coordinator change and maintenance of the coordinator through the front

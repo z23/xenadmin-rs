@@ -90,10 +90,12 @@ test, connection included.
 
 The rows of paths 1 to 5 and 7 (except the lost member) and the two base rows are runs made
 between 16:23 and 16:46 at commit `a87d6b6`, the last commit that changed the tests. The three
-host scenarios and the lost member were run once each, between 15:59 and 16:19, at the commits at
+host scenarios and the lost member are runs made between 15:59 and 16:19, at the commits at
 which they were written; the commits after them changed only the code of the recovery scenario of
-the coordinator's toolstack. They were not repeated: each is a restart, a reboot or a power cycle
-of the member.
+the coordinator's toolstack. The reboot, the shutdown and the lost member were run once each and
+not repeated: each is a reboot or a power cycle of the member. The member's toolstack scenario
+was run three times and passed at the third (its two failed runs are among those listed below);
+the coordinator's was run three times as well: passed, failed, passed.
 
 Runs that failed on the way, all kept under the evidence directory with `"outcome": "failed"`:
 11 runs of 8 scenarios, every one a matter of the test or of the harness and none a wrong result
