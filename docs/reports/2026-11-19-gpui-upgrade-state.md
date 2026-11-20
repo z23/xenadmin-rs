@@ -1,6 +1,6 @@
-# Upgrade from the released client's state directory (2026-11-19)
+# Upgrade from the old client's state directory (2026-11-19)
 
-What was checked: that a whole state directory written by a released client, whose window
+What was checked: that a whole state directory written by the old client, whose window
 was the Rune interface, is loaded by the new model as the start of the application loads it,
 and closed without loss. Until now only the preferences file had a model test.
 
@@ -34,6 +34,14 @@ XENADMIN_UPGRADE_STATE_DIR=/path/to/state cargo test -p xenadmin-ui --locked \
 ## Result
 
 Two directories outside the repository, both written against the project's lab only.
+
+Who wrote them, as far as it is known (added on 2026-11-20): the one called 0.17 below was
+created on 2026-11-11 by the packaged 0.17.0 AppImage in a driven session, and its
+preferences file was last written on 2026-11-12 by whichever build of the Rune client was
+run on it that day. The one called 0.19 was written on 2026-11-12 by a build of the tree
+made that afternoon for the README pictures, about an hour before the 0.19.0 packages were
+published: a client of the 0.19.0 period, not provably the released binary. Neither comes
+from a release package installed on a user's system, and no directory of 0.18.0 was tried.
 
 | | written by 0.19 | written by 0.17 |
 | --- | --- | --- |

@@ -25,7 +25,7 @@ Done:
   disposition in the ledger (154 moved, 119 ported, 94 split, 4 retired, none open).
 - Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
   Kit's headless test platform, and a render of every scene by `./scripts/check.sh`
-  (it passed on the merged tree on 2026-11-19, started at commit `1c84ac5`, and again on 2026-11-20 at commit `043b584`, after the review of the merged tree was settled; [G5 report](reports/2026-11-19-gpui-gate-g5.md), criterion 1). A state directory of the released client (0.19 and 0.17) is read by the new one
+  (it passed on the merged tree on 2026-11-19, started at commit `1c84ac5`, and again on 2026-11-20 at commit `043b584`, after the review of the merged tree was settled; [G5 report](reports/2026-11-19-gpui-gate-g5.md), criterion 1). A state directory of the old client (two were tried: one of the packaged 0.17.0, one of a build of the day 0.19.0 was released) is read by the new one
   without loss, by an ignored test run on copies ([report](reports/2026-11-19-gpui-upgrade-state.md)).
 - Verified live, headless, on the lab on 2026-11-19, by the ignored tests of
   `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a window:
@@ -106,7 +106,8 @@ Not established, and to be said wherever the front end's status is given:
   log, for the demo's views.
 - No keyring: a saved password and connection at startup have not been tried with the new front end.
 - The package that holds the fixes above is a CI build of the branch (run 44658600102, commit
-  `3493640`, the pushed head of `gpui-migration`), not a release artifact. Of it only the AppImage
+  `3493640` of `gpui-migration`, after which the branch has changed in documents only), not a
+  release artifact. Of it only the AppImage
   was run, in the session's virtual machine; the packages that were installed on clean systems and
   that went through the recovery gate are those of `e808a2f`.
 - The build of the merged tree has opened its window in one place: the virtual machine of the driven

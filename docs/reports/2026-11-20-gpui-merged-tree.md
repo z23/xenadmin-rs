@@ -178,7 +178,7 @@ coordinator's toolstack, the lost member and the certificate that is not the pin
 Not made in the machine. The ignored test
 `a_state_directory_of_the_released_client_loads_and_closes_without_loss`
 ([report of 2026-11-19](2026-11-19-gpui-upgrade-state.md) for what it does) passed at commit
-`3493640` on the two state directories of the released client. It was run for this report in
+`3493640` on the two state directories of the old client (that report says who wrote them). It was run for this report in
 a worktree at that commit; its lines:
 
 Directory written by 0.19:

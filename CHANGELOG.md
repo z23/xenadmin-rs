@@ -98,8 +98,9 @@ again for that, because no published version reads format 5.
     window (down to 513 by 652) does not exist. A separate console window can be as small
     as 480 by 640.
   - Preferences are read from the existing file. The width of the old details pane is
-    read and no longer written, as there is no such pane. The state directory of a
-    released client (0.17 and 0.19 were tried, on copies) is read without loss
+    read and no longer written, as there is no such pane. A state directory written by
+    the old client is read without loss (two were tried, on copies: one of the packaged
+    0.17.0 and one of a build of the day 0.19.0 was released)
     ([report](docs/reports/2026-11-19-gpui-upgrade-state.md)).
   - "Reduce animation" in Options still applies. The desktop's own reduced-motion
     setting, which the old interface followed as well, is no longer followed: the
