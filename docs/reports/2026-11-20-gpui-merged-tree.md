@@ -142,9 +142,11 @@ Not made in the machine. On 2026-11-20 from 13:08 local time, the ignored tests 
 `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a
 window, were run on the lab at commit `3493640`: every scenario of the
 [first live report](2026-11-19-gpui-live-headless.md), one at a time, each on a fresh state
-directory, with `lab_p3_member_toolstack_restart` in its stricter form. The lines are those of
-the run's summary file; the evidence directories are under `evidence/gpui/` on the lab's
-storage.
+directory, and of the [second](2026-11-19-gpui-live-paths.md) the member's toolstack restart,
+in the stricter form the review of 2026-11-20 gave it (with the member's console open Restart
+Toolstack was not offered, its menu item being disabled; it was offered once the console was
+closed, and the restart then ran and was followed to its end). The lines are those of the
+run's summary file; the evidence directories are under `evidence/gpui/` on the lab's storage.
 
 | Test | Exit | Seconds | Evidence directory |
 | --- | --- | --- | --- |
@@ -167,8 +169,7 @@ storage.
 | `lab_p3_power_batch` | 0 | 99 | `1795141249-p3-1-power-batch` |
 | `lab_state` | 0 | 1 | |
 
-Every line says exit 0 and one test passed, and the file has no line of a failed attempt. The scenarios of the
-[second live report](2026-11-19-gpui-live-paths.md) other than the member's toolstack restart
+Every line says exit 0 and one test passed, and the file has no line of a failed attempt. The other scenarios of the second report
 were not run again: among them the reboot and the shutdown of the member, the restart of the
 coordinator's toolstack, the lost member and the certificate that is not the pinned one.
 

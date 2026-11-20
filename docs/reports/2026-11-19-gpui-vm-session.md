@@ -372,7 +372,8 @@ This report does not edit the gate reports. For whoever does:
 - "Remember password in desktop keyring" and automatic connection at start: no keyring.
 - Time to the first frame: one measurement.
 - The two fixes ran on sway only, and the CI package does not have them until the branch is
-  merged and built.
+  merged and built. (Merged, and built by CI on 2026-11-20; that package was run in this machine:
+  [report](2026-11-20-gpui-merged-tree.md).)
 - Orca was run on the demo, not on views of the lab.
 - Whether the server closed the session when the window was closed could not be observed.
 - Chords the compositor or the kernel may take for itself (Ctrl+Alt+F1 at the keyboard,

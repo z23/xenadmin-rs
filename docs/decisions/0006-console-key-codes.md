@@ -9,7 +9,12 @@ each accepted limit is recorded under "Accepted limits" below. It has not run wi
 keyboard, and on no compositor other than Hyprland 0.56.2 (the spike, without a console) and sway
 1.12. The listener itself has no test; its key repeat, which the session found missing (a held key
 arrived in the guest as one press), has unit tests in `console/keys.rs` and was confirmed in the
-same machine with a build of the fix. In the headless lab runs of 2026-11-19 keys reached a guest
+same machine with a build of the fix and, on 2026-11-20, with the AppImage CI built of the merged
+tree (commit `3493640`): the guest recorded the first repeat 0.60 s after the press and then sway's
+25 a second, ending at the release, when the focus left the window and when the console was closed;
+a held Shift did not repeat ([report](../reports/2026-11-20-gpui-merged-tree.md)). That run also
+found that while a key is held and repeats, a pointer press on a button of the window does nothing:
+the toolkit repeats the key as key events of its own and counts no element as hovered after one. In the headless lab runs of 2026-11-19 keys reached a guest
 through the Kit's test key events, which is the path without the listener
 ([report](../reports/2026-11-19-gpui-live-headless.md)). Where the text below speaks of the Rune
 console or the Rune binary in the present tense, it is of 2026-11-14: the Rune crate has since been

@@ -318,9 +318,21 @@ machines, with software rendering, input injected by a script and nobody at them
   from the branch at commit `e808a2f`, in the virtual machines above. They lack what was
   fixed afterwards: in them a second start often shows nothing, a held key does not
   repeat in a console, "Reduce animation" has no effect, and a start without a display,
-  a seat, a font or a Vulkan driver panics, stays silent or does not end. No package
-  holds those fixes yet, and the recovery gate has not been run by a person or on a
-  release artifact.
+  a seat, a font or a Vulkan driver panics, stays silent or does not end. The packages
+  CI built of the merged tree on 2026-11-20 (commit `3493640`) hold those fixes. Their
+  AppImage was run in the same virtual machine
+  ([report](docs/reports/2026-11-20-gpui-merged-tree.md)): a second start marked the
+  window urgent, a held key repeated in a console, "Reduce animation" took effect, and a
+  start without a display or without a usable graphics backend said so and ended. It was
+  not installed on a clean system and not taken through the recovery gate, and a start
+  without a font or a seat was not tried with it. The recovery gate has not been run by a
+  person or on a release artifact.
+- While a key is held in a console and repeats, a pointer press on a button, a tab or a
+  menu of the window does nothing until the key is released: the toolkit counts nothing
+  as under the pointer after a key event of its own (same report, finding 1).
+- With a software renderer an open console can keep more than one CPU busy, and its
+  picture was once seen about a minute behind the guest (same report, finding 2). Not
+  looked at with a hardware GPU.
 - No keyring was present in any run of the new interface: a saved password and
   connection at startup have not been tried with it.
 - The lab runs of 2026-11-19 were headless: the interface was driven without a window.
@@ -348,7 +360,9 @@ machines, with software rendering, input injected by a script and nobody at them
   measured in (Adwaita Sans left 4 pixels). The part above the table then gives way
   for the table: the "Show list" switch is partly hidden until that part is scrolled,
   and it shows no scrollbar. Selecting a snapshot no longer moves the table (seen on
-  the test platform and in the headless scene tool at 780 by 600, not in a window).
+  the test platform, in the headless scene tool at 780 by 600 and, on 2026-11-20, in a
+  window in a virtual machine: at 800 by 600, where the row stayed on one line, and at
+  716 wide, where it wrapped).
 - The experimental areas are verified in the new interface on fixtures and by rendering
   only. The lab runs their entries in this changelog cite were made through the Rune
   interface or through the core's own scenarios

@@ -48,8 +48,11 @@ enough on a machine with no GPU; a hardware driver replaces it where there is on
 any Vulkan driver the client says that its main window did not open and ends, and where
 Mesa's OpenGL is installed it uses that instead. Started where no display is named, or
 where the named one cannot be reached, it says so in one line and ends. The packages CI
-built before 2026-11-19 do not yet have these messages: the report lists what they do in
-each case. The window
+built before 2026-11-20 do not have these messages: the clean-install report lists what
+they do in each case. The AppImage CI built of the merged tree on 2026-11-20 gave them in a
+virtual machine, each start ending at once with status 1
+([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-20-gpui-merged-tree.md)); a start without a font was
+not tried with it. The window
 has been opened in a headless Sway (the wlroots headless backend: it offers a seat, and no input was given there) and, with scripted input, in an X session
 without Wayland, both in a virtual machine with software rendering, and the AppImage has
 been driven through a Wayland session (sway) in another, with input injected at the
