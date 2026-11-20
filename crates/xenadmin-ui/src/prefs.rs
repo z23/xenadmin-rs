@@ -192,17 +192,30 @@ impl Preferences {
     /// The name a `preferences.json` this build cannot read is kept under.
     pub const UNREADABLE: &'static str = "preferences.json.unreadable";
 
+    /// Whether reading this file drops a whole section of it
+    /// ([`Self::normalized`]): saved searches, graph presets or external
+    /// tools this build does not accept (the schema version of a newer
+    /// client, a duplicate name, too many entries).
+    fn loses_a_section(&self) -> bool {
+        self.metric_presets.validate().is_err()
+            || self.saved_searches.validate().is_err()
+            || !self.external_tools.valid()
+    }
+
     /// A `preferences.json` that does not parse was read as the defaults
-    /// (`load_from`): one value this build rejects, a truncated file. Before
-    /// the defaults are written over it, it is moved beside itself, so that
-    /// the saved searches, tools and presets it held are not lost for good.
-    /// The latest such file is the one kept.
+    /// (`load_from`): one value this build rejects, a truncated file. One
+    /// that parses but holds a section this build does not accept was read
+    /// with that section empty. Before either is written over, it is moved
+    /// beside itself, so that the saved searches, tools and presets it held
+    /// are not lost for good. The latest such file is the one kept.
     fn set_aside_unreadable(dir: &std::path::Path) {
         let path = dir.join("preferences.json");
         let Ok(bytes) = std::fs::read(&path) else {
             return;
         };
-        if serde_json::from_slice::<Self>(&bytes).is_err() {
+        let whole =
+            serde_json::from_slice::<Self>(&bytes).is_ok_and(|read| !read.loses_a_section());
+        if !whole {
             let _ = std::fs::rename(&path, dir.join(Self::UNREADABLE));
         }
     }
@@ -366,6 +379,34 @@ mod tests {
         std::fs::remove_file(&kept).expect("remove");
         std::fs::write(&path, rune_file()).expect("valid file");
         Preferences::load_from(&dir).save_to(&dir).expect("save");
+        assert!(!kept.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_preferences_file_with_a_section_that_is_not_accepted_is_kept_too() {
+        let dir = std::env::temp_dir().join(format!("xenadmin-prefs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("directory");
+        let path = dir.join("preferences.json");
+        let kept = dir.join(Preferences::UNREADABLE);
+        // The saved searches of a newer client: the file parses, and the
+        // section is read as empty.
+        let mut newer: serde_json::Value = serde_json::from_str(&rune_file()).expect("json");
+        newer["saved_searches"]["schema_version"] = 2.into();
+        let newer = serde_json::to_string_pretty(&newer).expect("text");
+        let parsed: Preferences = serde_json::from_str(&newer).expect("it parses");
+        assert_eq!(parsed.saved_searches.searches.len(), 1);
+        std::fs::write(&path, &newer).expect("file");
+        let read = Preferences::load_from(&dir);
+        assert!(read.saved_searches.searches.is_empty());
+        assert_eq!(read.external_tools.tools.len(), 2, "the rest is read");
+        read.save_to(&dir).expect("first save");
+        assert_eq!(std::fs::read_to_string(&kept).expect("kept"), newer);
+        // What was written is accepted whole: the next save keeps nothing.
+        std::fs::remove_file(&kept).expect("remove");
+        Preferences::load_from(&dir)
+            .save_to(&dir)
+            .expect("second save");
         assert!(!kept.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

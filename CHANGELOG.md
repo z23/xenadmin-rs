@@ -257,7 +257,9 @@ again for that, because no published version reads format 5.
   accept, a truncated file) was replaced by the defaults at the first close, and the
   saved searches, external tools, graph presets and hidden history it held were gone,
   with no message; 0.19.0 does the same. The file is now kept beside the new one as
-  `preferences.json.unreadable`. The window still says nothing about it.
+  `preferences.json.unreadable`. So is a file that can be read but whose saved searches,
+  graph presets or external tools the client does not accept (those of a newer client,
+  a duplicate name), which are read as empty. The window still says nothing about it.
 - Editing a connection's address kept the certificate pin of the old address and
   attached it to the new one. A connection's saved pins and certificate details are
   now dropped when its address changes, so the host at the new address has to be
