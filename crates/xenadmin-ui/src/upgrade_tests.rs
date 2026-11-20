@@ -96,6 +96,10 @@ fn journal(directory: &Path) -> Option<Journal> {
     let files = regular_files(directory);
     files.get(JOURNAL)?;
     let probe = TempDir::new("upgrade-journal");
+    // The copy holds what the journal holds (pools, VMs, the details of
+    // operations): nobody else on the machine reads it.
+    std::fs::set_permissions(probe.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("private copy of the journal");
     for (name, bytes) in files.iter().filter(|(name, _)| name.starts_with(JOURNAL)) {
         std::fs::write(probe.path().join(name), bytes).expect("copy of the journal");
     }
@@ -467,9 +471,20 @@ fn load_and_close() {
             .collect();
         wanted.is_subset(&listed)
     });
+    // The wait above is the check: it ends only when every one is listed.
+    let listed = h
+        .model
+        .operation_rows
+        .iter()
+        .filter(|record| {
+            serde_json::to_value(record.id)
+                .ok()
+                .and_then(|id| id.as_str().map(|id| wanted.contains(id)))
+                .unwrap_or(false)
+        })
+        .count();
     println!(
-        "upgrade: VM operations of the journal listed by the model after a session opened: {} of {}",
-        wanted.len(),
+        "upgrade: VM operations of the journal listed by the model after a session opened: {listed} of {}",
         before.operations.len()
     );
     h.model.close();
