@@ -774,7 +774,7 @@ fn further_states(cx: &mut TestAppContext, findings: &mut Findings) {
                 inventory
                     .vms
                     .keys()
-                    .find(|id| id.to_string() != scope.id.to_string())
+                    .find(|id| id.to_string() != scope.id)
                     .copied()
             })
             .expect("a second VM");
