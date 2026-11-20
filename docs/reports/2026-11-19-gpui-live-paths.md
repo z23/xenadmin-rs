@@ -109,8 +109,8 @@ Not restored when a host scenario fails half way: the reboot and the shutdown th
 bring the member back only where their helpers return. A panic inside them (a review that does
 not open, a record that is not listed in time) leaves the member disabled, or powered off and
 still in maintenance; no utility of the tests puts it back, and it is done by hand (`virsh
-domstate` and `virsh start` for the member's machine, then Server > Exit Maintenance Mode). This
-did not happen in the runs of this report. (Found by the review of 2026-11-20, which also made
+domstate` and `virsh start` for the member's machine, then Server > Exit Maintenance Mode). The
+two scenarios passed in the one run each had. (Found by the review of 2026-11-20, which also made
 the toolstack scenario stricter: it now fails, confirming nothing, if Restart Toolstack is offered
 while the member's console is open, where it used to accept a review that cannot be confirmed or
 a request the host refuses as the refusal. The stricter scenario has not been run.)
