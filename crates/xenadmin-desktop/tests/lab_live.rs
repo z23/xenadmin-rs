@@ -4738,35 +4738,19 @@ fn lab_p3_member_toolstack_restart() {
     client.pass(Duration::from_secs(5));
     let refused = match client.try_menu(Menu::Server, "server.restart-toolstack") {
         Err(reason) => json!({ "how": "the menu item is disabled", "reason": reason }),
+        // The refusal that was observed and is reported is the disabled menu
+        // item (run 1795064283). Until 2026-11-20 this scenario also took a
+        // review that cannot be confirmed, and a request the host refuses,
+        // for the refusal, and for the last it pressed the confirmation. A
+        // client that offers the restart here has stopped refusing it:
+        // nothing is confirmed, and the scenario fails.
         Ok(()) => {
-            assert_eq!(client.front().as_deref(), Some("host-restart-toolstack"));
-            client.snap(&mut evidence, "restart-with-a-console-open");
-            let error = client
-                .node("host-error")
-                .and_then(|node| node.text.or(node.label));
-            match client.try_press("host-confirm") {
-                Err(reason) => {
-                    client.press("host-close");
-                    json!({ "how": "the review cannot be confirmed", "reason": reason, "says": error })
-                }
-                Ok(()) => {
-                    let before = resource_ids(&mut client);
-                    client.wait("the request ended", Duration::from_secs(300), |client| {
-                        client
-                            .model(|m| m.resource_rows.iter().all(|record| record.state.terminal()))
-                    });
-                    let said = client.model(|m| m.error.clone());
-                    let record = before
-                        .last()
-                        .map(|id| resource_record(&mut client, *id))
-                        .map(|(state, detail, _)| json!([format!("{state:?}"), detail]));
-                    if client.front().is_some() {
-                        client.snap(&mut evidence, "restart-refused-by-the-host");
-                        client.press("host-close");
-                    }
-                    json!({ "how": "the request was made", "says": said.or(error), "record": record })
-                }
-            }
+            client.snap(&mut evidence, "restart-offered-with-a-console-open");
+            client.press("host-close");
+            panic!(
+                "Restart Toolstack was offered in the Server menu while the member's console is \
+                 open; its review was closed unconfirmed"
+            );
         }
     };
     assert_eq!(client.front(), None);
@@ -4857,6 +4841,17 @@ fn lab_p3_member_toolstack_restart() {
     evidence.finish();
 }
 
+/// NOT RESTORED ON A PANIC. The host scenarios (reboot and shutdown through
+/// maintenance) bring the member back only where their helpers return: a
+/// panic inside `enter_maintenance` or `host_change` (a review that does
+/// not open, a record that is not listed in time, a state that is not
+/// `Succeeded`) ends the scenario with the member disabled, or with its
+/// machine off and still in maintenance. No utility puts it back, and every
+/// later host scenario then fails at its first assertion. By hand:
+/// `virsh -c qemu:///system domstate <the member's domain>`, `virsh start`
+/// if it is off, and Server > Exit Maintenance Mode in a client once the
+/// member is live. `lab_state` only prints.
+///
 /// Enter Maintenance Mode for the selected, empty member.
 fn enter_maintenance(
     client: &mut Client,
@@ -5002,7 +4997,8 @@ fn lab_p3_member_reboot_through_maintenance() {
     evidence.note("reboot_record", json!(detail));
     evidence.note("boot_time", json!([boot_before, boot_after]));
     evidence.note("reboot_seconds", json!(seconds(started.elapsed())));
-    // The server is brought out of maintenance whatever the record said.
+    // The server is brought out of maintenance whatever state the record
+    // ended in. Not if a helper above panicked: see `enter_maintenance`.
     exit_maintenance(&mut client, &mut evidence, &outside, &host, member);
     client.snap(&mut evidence, "enabled-again");
     assert_eq!(state, OperationState::Succeeded, "{detail} {steps:?}");

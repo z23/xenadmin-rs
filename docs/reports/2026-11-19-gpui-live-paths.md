@@ -105,6 +105,16 @@ only when told; the toolbar has no power buttons while the inventory is stale; o
 certificate scenario was an exploration that ends in a panic by design). Two of them left
 something to learn about the product: findings 1 and 2.
 
+Not restored when a host scenario fails half way: the reboot and the shutdown through maintenance
+bring the member back only where their helpers return. A panic inside them (a review that does
+not open, a record that is not listed in time) leaves the member disabled, or powered off and
+still in maintenance; no utility of the tests puts it back, and it is done by hand (`virsh
+domstate` and `virsh start` for the member's machine, then Server > Exit Maintenance Mode). This
+did not happen in the runs of this report. (Found by the review of 2026-11-20, which also made
+the toolstack scenario stricter: it now fails, confirming nothing, if Restart Toolstack is offered
+while the member's console is open, where it used to accept a review that cannot be confirmed or
+a request the host refuses as the refusal. The stricter scenario has not been run.)
+
 Utilities, not scenarios: `lab_state` (read-only; run after every scenario),
 `lab_baseline_plain_guest_on_the_coordinator` (new: moves the plain guest home with the
 application's own wizard when a failed run left it on the member; needed once, see finding 2), and
