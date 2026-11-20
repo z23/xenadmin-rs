@@ -3,7 +3,8 @@
 The check of [2026-11-11](2026-11-11-clean-install.md) was repeated for the packages CI
 built after the cutover: two throwaway virtual machines, each booted from the
 distribution's official cloud image with nothing added, the archive and the AppImage
-installed in them, the client started in a window on a compositor without a seat, and the
+installed in them, the client started in a window on a headless compositor (Sway on the wlroots headless
+backend, which offers a seat; no input was given there), and the
 probe used against the lab with no internet. It is the first time the new client ran
 outside the development workstation and the first time it drew into a window of a
 compositor at all. No person saw or used that window: see the last section.

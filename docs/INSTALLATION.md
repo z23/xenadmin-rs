@@ -21,8 +21,13 @@ Ubuntu 24.04 is the build baseline in CI. A build made on a newer distribution c
 its newer glibc; wrapping that build in an AppImage does not lower its runtime requirements.
 
 The packages CI built of the GPUI Kit front end were installed and started on untouched
-Ubuntu 24.04 and Arch images with only these packages added
-([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)):
+Ubuntu 24.04 and Arch images
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)).
+The lists below are the documented lists as that check corrected them: a font package in
+place of fontconfig. The corrected lists were not installed alone on an untouched image:
+for the window a compositor's packages were installed as well (their libraries were
+hidden from the client under Wayland, not under X), and on Arch what ran was the earlier
+list with the font package added:
 
 ```sh
 # Ubuntu 24.04
@@ -45,7 +50,7 @@ Mesa's OpenGL is installed it uses that instead. Started where no display is nam
 where the named one cannot be reached, it says so in one line and ends. The packages CI
 built before 2026-11-19 do not yet have these messages: the report lists what they do in
 each case. The window
-has been opened in a compositor without a seat and, with scripted input, in an X session
+has been opened in a headless Sway (the wlroots headless backend: it offers a seat, and no input was given there) and, with scripted input, in an X session
 without Wayland, both in a virtual machine with software rendering, and the AppImage has
 been driven through a Wayland session (sway) in another, with input injected at the
 machine's devices ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md));

@@ -42,7 +42,7 @@ Done:
 - Verified in virtual machines on 2026-11-19, with the archive and the AppImage that CI built at
   commit `e808a2f`, software rendering, nobody at them:
   - a clean installation on Ubuntu 24.04 and on Arch: checksums, installer, the window opened under
-    a Wayland compositor that had no seat and, on Ubuntu, in an X session with scripted input, the
+    a headless Sway (the wlroots headless backend: it offers a seat, and no input was given there) and, on Ubuntu, in an X session with scripted input, the
     probe reading the lab with no route to the internet, uninstall
     ([report](reports/2026-11-19-gpui-clean-install.md));
   - a driven session in a Wayland session (sway 1.12 on the machine's own display, keys and pointer
@@ -63,7 +63,7 @@ Done:
 Not established, and to be said wherever the front end's status is given:
 
 - No person has used the client in a window. Nothing was drawn by a hardware GPU. The only
-  compositor it has run on is sway 1.12 (and a seatless Sway for the clean installation): not
+  compositor it has run on is sway 1.12 (and a headless Sway, without input, for the clean installation): not
   Hyprland, which is the operator's, not GNOME, not KDE. On X11 the window opened once, without a
   console; the keystroke fallback of the console has not run in a window.
 - The Wayland key path (route A) has run with injected keys on sway only: no real keyboard, no

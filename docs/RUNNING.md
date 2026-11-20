@@ -17,7 +17,8 @@ session either. At run time it also needs `libwayland-client` in a Wayland sessi
 Vulkan loader and a Vulkan driver, and a font of one of the families it looks for by name
 (DejaVu Sans and Noto Sans among them); it does not load fontconfig. The
 [installation guide](INSTALLATION.md#runtime-requirements) has the run-time packages for
-Ubuntu 24.04 and Arch as a clean-system check confirmed them.
+Ubuntu 24.04 and Arch as a clean-system check corrected them (the corrected lists were
+not installed alone on an untouched system).
 
 On Debian or Ubuntu the build packages are the ones CI and the release workflow install:
 `build-essential`, `pkg-config`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libxcb1-dev`,
@@ -55,7 +56,7 @@ passes its tests on the toolkit's headless test platform, every scene renders of
 and it has been driven headless against the lab
 ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-live-headless.md)). The packaged client has been
 installed on untouched Ubuntu 24.04 and Arch systems in virtual machines and has opened its
-window there with software rendering: in a Wayland compositor that had no seat, and, with
+window there with software rendering: in a headless Sway (the wlroots headless backend: it offers a seat, and no input was given there), and, with
 scripted input, in an X session without Wayland
 ([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)). The AppImage has also
 been driven through a Wayland session (sway 1.12) in a virtual machine, with software
