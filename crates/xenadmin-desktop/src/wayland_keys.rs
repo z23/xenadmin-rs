@@ -255,10 +255,14 @@ impl ForeignKeyboard {
 
     /// Send queued requests. A foreign display must flush; it must not
     /// roundtrip, because roundtrip would read the owner's socket.
+    /// Sends the queued requests. A socket that would block is no failure:
+    /// the requests stay queued and leave with a later flush, this
+    /// listener's or the toolkit's.
     pub fn flush(&self) -> Result<(), String> {
-        self.connection
-            .flush()
-            .map_err(|error| format!("Wayland flush failed: {error}"))
+        match self.connection.flush() {
+            Err(error) if !would_block(&error) => Err(format!("Wayland flush failed: {error}")),
+            _ => Ok(()),
+        }
     }
 
     pub fn keyboard_bound(&self) -> bool {
@@ -292,6 +296,15 @@ impl ForeignKeyboard {
     }
 }
 
+/// Whether a flush only could not write now.
+fn would_block(error: &wayland_client::backend::WaylandError) -> bool {
+    matches!(
+        error,
+        wayland_client::backend::WaylandError::Io(io)
+            if io.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +319,18 @@ mod tests {
             panic!("a null display must fail");
         };
         assert!(error.contains("null"), "{error}");
+    }
+
+    #[test]
+    fn a_flush_that_would_block_is_not_the_end_of_the_listener() {
+        use std::io::{Error, ErrorKind};
+        use wayland_client::backend::WaylandError;
+        assert!(would_block(&WaylandError::Io(Error::from(
+            ErrorKind::WouldBlock
+        ))));
+        assert!(!would_block(&WaylandError::Io(Error::from(
+            ErrorKind::BrokenPipe
+        ))));
     }
 
     #[test]

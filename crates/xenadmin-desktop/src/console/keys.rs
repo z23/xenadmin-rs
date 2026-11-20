@@ -24,6 +24,11 @@
 //!   `repeat_info` gives. In the driven session of 2026-11-19 a key held for
 //!   two seconds arrived in the guest once, before this was added
 //!   (`docs/reports/2026-11-19-gpui-vm-session.md`).
+//! - What a drain gives the console is decided apart from the toolkit
+//!   ([`SeatState::drain`]): a repeat is sent only while the listener lives
+//!   and a canvas has the keyboard. A listener that fails is given up, and
+//!   with it the repeat of a key that was held: its release would arrive
+//!   on the keystroke path, which the repeat does not hear.
 //!
 //! Without a listener the canvas forwards GPUI's keystroke (the path the
 //! seam calls experimental, plan decision D7): the key's name gives an evdev
@@ -37,6 +42,11 @@
 //! keyboard leaves and the repeats, by what a lab guest recorded. Not on a
 //! person's seat, and on no other compositor; the listener itself was shown
 //! on Hyprland 0.56.2 by the spike.
+//!
+//! NOT RUN SINCE: on 2026-11-20 the drain was rewritten around
+//! [`SeatState`] so that the ends of a repeat can be tested, and a flush
+//! that would block stopped ending the listener. The decisions are held by
+//! this module's tests; the rewritten pump has run on no compositor.
 
 use std::time::{Duration, Instant};
 
@@ -258,14 +268,111 @@ fn repeats(code: u32) -> bool {
     )
 }
 
-/// The listener of the application.
-struct SeatKeys {
-    /// `None`: there is no listener (see the module).
-    keyboard: Option<ForeignKeyboard>,
+/// What one drain gives the console that has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The compositor took the keyboard away: nothing stays down, and the
+    /// console has the keyboard no longer.
+    Release,
+    /// A key by its evdev code, with the modifier state it was pressed in.
+    Key {
+        code: u32,
+        down: bool,
+        modifiers: model::Modifiers,
+    },
+}
+
+/// What the listener's path remembers between two drains.
+#[derive(Debug, Default)]
+pub struct SeatState {
     /// What the last modifiers event said.
     modifiers: model::Modifiers,
     /// The repeats of the key held in a console.
     repeater: Repeater,
+}
+
+impl SeatState {
+    /// One drain of the queue at `now`. `events` is what the listener
+    /// queued, `listening` whether the listener is still alive after it
+    /// was asked, `console` whether a canvas has the keyboard. Returns what
+    /// that canvas is given, in order.
+    ///
+    /// A key repeats only while the listener lives and a console has the
+    /// keyboard. Every other state ends the repeat: who would report the
+    /// key's release is gone, or who would receive the repeat is.
+    pub fn drain(
+        &mut self,
+        events: Vec<SeatEvent>,
+        listening: bool,
+        mut console: bool,
+        now: Instant,
+    ) -> Vec<Delivery> {
+        let mut out = Vec::new();
+        for event in events {
+            match event {
+                SeatEvent::Enter { .. } => {}
+                SeatEvent::Leave { .. } => {
+                    self.repeater.clear();
+                    if console {
+                        out.push(Delivery::Release);
+                        console = false;
+                    }
+                }
+                SeatEvent::Key { evdev, down } => {
+                    if console {
+                        self.repeater.key(evdev, down, now);
+                        out.push(Delivery::Key {
+                            code: evdev,
+                            down,
+                            modifiers: self.modifiers,
+                        });
+                    }
+                }
+                other => self.settings(other),
+            }
+        }
+        if !(listening && console) {
+            self.repeater.clear();
+        } else if let Some(code) = self.repeater.due(now) {
+            out.push(Delivery::Key {
+                code,
+                down: true,
+                modifiers: self.modifiers,
+            });
+        }
+        out
+    }
+
+    /// A canvas took the keyboard: the keys in `events` were typed
+    /// somewhere else and are dropped; what they say about the modifiers
+    /// and the repeat is kept. Nothing is held.
+    pub fn focus_gained(&mut self, events: Vec<SeatEvent>) {
+        for event in events {
+            self.settings(event);
+        }
+        self.repeater.clear();
+    }
+
+    /// The events that are state and no key.
+    fn settings(&mut self, event: SeatEvent) {
+        match event {
+            SeatEvent::Modifiers {
+                depressed,
+                latched,
+                locked,
+                ..
+            } => self.modifiers = seat_modifiers(depressed, latched, locked),
+            SeatEvent::RepeatInfo { rate, delay } => self.repeater.set_info(rate, delay),
+            _ => {}
+        }
+    }
+}
+
+/// The listener of the application.
+struct SeatKeys {
+    /// `None`: there is no listener (see the module).
+    keyboard: Option<ForeignKeyboard>,
+    state: SeatState,
     _pump: Option<Task<()>>,
 }
 
@@ -283,8 +390,7 @@ pub(crate) fn attach(window: &Window, cx: &mut App) {
     let listening = keyboard.is_some();
     cx.set_global(SeatKeys {
         keyboard,
-        modifiers: model::Modifiers::default(),
-        repeater: Repeater::default(),
+        state: SeatState::default(),
         _pump: None,
     });
     if listening {
@@ -311,23 +417,8 @@ pub(crate) fn focus_gained(cx: &mut App) {
     {
         return;
     }
-    for event in take_events(cx) {
-        match event {
-            SeatEvent::Modifiers {
-                depressed,
-                latched,
-                locked,
-                ..
-            } => {
-                cx.global_mut::<SeatKeys>().modifiers = seat_modifiers(depressed, latched, locked);
-            }
-            SeatEvent::RepeatInfo { rate, delay } => {
-                cx.global_mut::<SeatKeys>().repeater.set_info(rate, delay);
-            }
-            _ => {}
-        }
-    }
-    cx.global_mut::<SeatKeys>().repeater.clear();
+    let events = take_events(cx);
+    cx.global_mut::<SeatKeys>().state.focus_gained(events);
     pump(cx);
 }
 
@@ -360,59 +451,38 @@ fn take_events(cx: &mut App) -> Vec<SeatEvent> {
         Err(error) => {
             eprintln!("The console key listener stopped: {error}");
             seat.keyboard = None;
+            // Nobody reports the release of a held key from here on.
+            seat.state.repeater.clear();
             Vec::new()
         }
     }
 }
 
-/// Delivers what the listener queued. Returns whether a canvas has the
-/// keyboard.
+/// Delivers what the listener queued ([`SeatState::drain`]). Returns
+/// whether a canvas has the keyboard and the listener lives: whether the
+/// queue is to be drained quickly.
 fn drain(cx: &mut App) -> bool {
-    for event in take_events(cx) {
-        match event {
-            SeatEvent::Enter { .. } => {}
-            // The compositor took the keyboard away: nothing stays down.
-            SeatEvent::Leave { .. } => {
-                cx.global_mut::<SeatKeys>().repeater.clear();
-                if let Some(target) = canvas::with_keyboard(cx) {
-                    target.update(cx, |canvas, cx| canvas.release(cx));
-                }
-            }
-            SeatEvent::Key { evdev, down } => {
-                let modifiers = cx.global::<SeatKeys>().modifiers;
-                if let Some(target) = canvas::with_keyboard(cx) {
-                    cx.global_mut::<SeatKeys>()
-                        .repeater
-                        .key(evdev, down, Instant::now());
-                    target.update(cx, |canvas, cx| {
-                        canvas.send_code(evdev, down, modifiers, cx)
-                    });
-                }
-            }
-            SeatEvent::RepeatInfo { rate, delay } => {
-                cx.global_mut::<SeatKeys>().repeater.set_info(rate, delay);
-            }
-            SeatEvent::Modifiers {
-                depressed,
-                latched,
-                locked,
-                ..
-            } => {
-                cx.global_mut::<SeatKeys>().modifiers = seat_modifiers(depressed, latched, locked);
-            }
-        }
-    }
-    // The key held in the console repeats; no console, no repeat.
-    let Some(target) = canvas::with_keyboard(cx) else {
-        cx.global_mut::<SeatKeys>().repeater.clear();
+    let events = take_events(cx);
+    let target = canvas::with_keyboard(cx);
+    let seat = cx.global_mut::<SeatKeys>();
+    let listening = seat.keyboard.is_some();
+    let deliveries = seat
+        .state
+        .drain(events, listening, target.is_some(), Instant::now());
+    let Some(target) = target else {
         return false;
     };
-    let seat = cx.global_mut::<SeatKeys>();
-    let modifiers = seat.modifiers;
-    if let Some(code) = seat.repeater.due(Instant::now()) {
-        target.update(cx, |canvas, cx| canvas.send_code(code, true, modifiers, cx));
+    for delivery in deliveries {
+        target.update(cx, |canvas, cx| match delivery {
+            Delivery::Release => canvas.release(cx),
+            Delivery::Key {
+                code,
+                down,
+                modifiers,
+            } => canvas.send_code(code, down, modifiers, cx),
+        });
     }
-    true
+    listening && target.read(cx).has_keyboard()
 }
 
 #[cfg(test)]
@@ -541,6 +611,115 @@ mod tests {
         assert_eq!(repeater.due(start + Duration::from_secs(5)), None);
         repeater.set_info(-1, -1);
         assert_eq!(repeater.due(start + Duration::from_secs(9)), None);
+    }
+
+    fn key(code: u32, down: bool) -> Delivery {
+        Delivery::Key {
+            code,
+            down,
+            modifiers: model::Modifiers::default(),
+        }
+    }
+
+    /// A state in which the key `a` has been down for a second in a
+    /// console, at the default rate, and `start`.
+    fn held() -> (SeatState, Instant) {
+        let start = Instant::now();
+        let mut seat = SeatState::default();
+        let down = vec![SeatEvent::Key {
+            evdev: 30,
+            down: true,
+        }];
+        assert_eq!(seat.drain(down, true, true, start), [key(30, true)]);
+        (seat, start + Duration::from_secs(1))
+    }
+
+    #[test]
+    fn a_held_key_repeats_into_the_console_that_has_the_keyboard() {
+        let (mut seat, later) = held();
+        assert_eq!(seat.drain(Vec::new(), true, true, later), [key(30, true)]);
+        let up = vec![SeatEvent::Key {
+            evdev: 30,
+            down: false,
+        }];
+        assert_eq!(seat.drain(up, true, true, later), [key(30, false)]);
+        let much_later = later + Duration::from_secs(5);
+        assert_eq!(seat.drain(Vec::new(), true, true, much_later), []);
+    }
+
+    #[test]
+    fn a_listener_that_failed_ends_the_repeat_of_the_held_key() {
+        // The release of the key will not arrive through the listener.
+        let (mut seat, later) = held();
+        assert_eq!(seat.drain(Vec::new(), false, true, later), []);
+        // And the key is not remembered for a listener that is not there.
+        let much_later = later + Duration::from_secs(5);
+        assert_eq!(seat.drain(Vec::new(), false, true, much_later), []);
+        assert_eq!(seat.drain(Vec::new(), true, true, much_later), []);
+    }
+
+    #[test]
+    fn no_console_with_the_keyboard_ends_the_repeat() {
+        // Blur, another window, Release Input, a closed console.
+        let (mut seat, later) = held();
+        assert_eq!(seat.drain(Vec::new(), true, false, later), []);
+        let back = later + Duration::from_secs(5);
+        assert_eq!(seat.drain(Vec::new(), true, true, back), []);
+        // A key typed while no console has the keyboard goes nowhere and
+        // does not repeat later.
+        let elsewhere = vec![SeatEvent::Key {
+            evdev: 31,
+            down: true,
+        }];
+        assert_eq!(seat.drain(elsewhere, true, false, back), []);
+        let after = back + Duration::from_secs(5);
+        assert_eq!(seat.drain(Vec::new(), true, true, after), []);
+    }
+
+    #[test]
+    fn the_keyboard_leaving_releases_the_console_and_ends_the_repeat() {
+        let (mut seat, later) = held();
+        let leave = vec![
+            SeatEvent::Leave {
+                surface: 1,
+                protocol_id: 1,
+            },
+            // What follows a leave in the same batch is not the console's.
+            SeatEvent::Key {
+                evdev: 31,
+                down: true,
+            },
+        ];
+        assert_eq!(seat.drain(leave, true, true, later), [Delivery::Release]);
+        let much_later = later + Duration::from_secs(5);
+        assert_eq!(seat.drain(Vec::new(), true, true, much_later), []);
+    }
+
+    #[test]
+    fn gaining_the_focus_keeps_the_state_and_drops_the_keys() {
+        let (mut seat, later) = held();
+        seat.focus_gained(vec![
+            SeatEvent::Key {
+                evdev: 31,
+                down: true,
+            },
+            SeatEvent::Modifiers {
+                depressed: 1,
+                latched: 0,
+                locked: 0,
+                group: 0,
+            },
+        ]);
+        assert_eq!(seat.drain(Vec::new(), true, true, later), []);
+        let down = vec![SeatEvent::Key {
+            evdev: 32,
+            down: true,
+        }];
+        let shifted = seat.drain(down, true, true, later);
+        assert!(
+            matches!(shifted[..], [Delivery::Key { code: 32, down: true, modifiers }] if modifiers.shift),
+            "{shifted:?}"
+        );
     }
 
     #[test]
