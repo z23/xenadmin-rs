@@ -133,8 +133,10 @@ Not established, and to be said wherever the front end's status is given:
   console can keep more than one CPU busy, its picture once seen about a minute behind the guest
   (the load also with the package of `e808a2f`). Whether a hardware GPU shows the second is not
   known.
-- The recovery gate has not been run on a release artifact (there is none), nor by a person, nor
-  with the package of `3493640`.
+- Tag `v0.20.0` is on main at commit `959050d`. Workflow run 44858817761 built the
+  archive and the AppImage and attached them to a draft pre-release. That draft is not
+  published. The recovery gate has not been run on it, nor by a person, nor with the
+  package of `3493640`.
 - A coordinator handover to the member and back, and
   maintenance of that coordinator with no resident guest, were run headless on 2026-11-21
   ([report](reports/2026-11-21-gpui-coordinator.md)). The host's refusal to evacuate a
@@ -156,7 +158,7 @@ operator may hold that a person's run is needed and say so.
 | G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer). Criterion 5: on 2026-11-21 the 22 actions were moved onto command rows, and the review finds none outside the allowed places in the states it shows; it does not show every state | [G2](reports/2026-11-19-gpui-gate-g2.md) |
 | G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage of `e808a2f`) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless. The four paths the G3 report left missing were run headless on 2026-11-21. The accepted forced shutdown during a migration stays unrun, and none of criterion 2 was run in a window; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
-| G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f` and again at `3493640`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
+| G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f`, at `3493640`, and for tag `v0.20.0` as run 44858817761) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and not on the draft packages of `v0.20.0` | [G5](reports/2026-11-19-gpui-gate-g5.md) |
 
 What remains, and is the operator's:
 
@@ -177,7 +179,8 @@ What remains, and is the operator's:
    ([report](reports/2026-11-21-gpui-inflight-toolstack.md)), and a saved password restored
    from a private keyring
    ([report](reports/2026-11-21-gpui-keyring.md)). Gate G3 stays not passed.
-4. The release, with its version (decision D10), its report and its tag.
+4. Tag `v0.20.0` is pushed and GitHub holds its draft pre-release (run 44858817761).
+   The draft is not published, and the recovery gate has not been run on its packages.
 5. Done by the operator's direction of 2026-11-21, carried out with the commit that records it.
    `main` is this tree. The repository description names GPUI Kit where it named Rune UI. Pull
    requests 19, 20, 22, 23 and 24 are closed; each of those branches is contained in this tree.

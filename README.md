@@ -163,13 +163,15 @@ Xen Orchestra was shut down and unreachable; the VM was found with the search bo
 started, and typed into at its login prompt; the client's connections went to the pool's
 coordinator only; XO answered again afterwards
 ([report](docs/reports/2026-11-19-gpui-vm-session.md), section E). It has not been
-repeated by a person at a desk or with a release artifact, which is what a release still
-needs, nor with the package CI built of the merged tree on 2026-11-20 (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
+repeated by a person at a desk, nor on the draft packages of tag `v0.20.0`, nor with the
+package CI built of the merged tree on 2026-11-20 (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
 
 ## Release history
 
 0.18.0 was the first published version and 0.19.0 is the second, both betas, with their
 packages on the project's releases page and their notes in the [changelog](CHANGELOG.md).
+0.20.0 is tagged and its archive and AppImage are on a draft pre-release. That draft is
+not published, and the recovery gate has not been run on those packages.
 The versions before them were development checkpoints that froze source locally and
 recorded their verification:
 
