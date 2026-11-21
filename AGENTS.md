@@ -78,8 +78,10 @@ Standing rules:
 Open, and to be said wherever the front end's status is given (the plan's "Status" section
 and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
 
-- No person has used the GPUI front end in a window, and no hardware GPU has drawn it. It
-  has run in real windows only in virtual machines, on 2026-11-19 and 2026-11-20, with a
+- On 2026-11-21 the operator ran a local build of the GPUI front end, reported that it looks
+  good, and directed that this tree become the main version. That run names no commit,
+  compositor, renderer, host or scenario, and no hardware GPU is recorded as having drawn it.
+  The recorded window runs are in virtual machines, on 2026-11-19 and 2026-11-20, with a
   software renderer and nobody at them: a driven session with keys and pointer injected at the machine's
   devices, on sway 1.12
   ([report](docs/reports/2026-11-19-gpui-vm-session.md)), and the window opened on clean

@@ -61,10 +61,10 @@ software rendering and nobody at them: installed on clean Ubuntu 24.04 and Arch 
 ([report](docs/reports/2026-11-19-gpui-clean-install.md)), and driven in a Wayland session
 (sway) with keys and pointer injected at the machine's devices, where the client connected
 to the lab, passed the recovery gate below and typed into consoles through its Wayland
-keyboard path ([report](docs/reports/2026-11-19-gpui-vm-session.md)). Not established: no
-person has used the new front end in a window; it has not drawn on a hardware GPU; it has
-not run on Hyprland, GNOME or KDE, nor with a console on X11; no person has used a screen
-reader with it; no keyring was present in any run; and the fixes those runs led to are in
+keyboard path ([report](docs/reports/2026-11-19-gpui-vm-session.md)). On 2026-11-21 the
+operator ran a local build and reported that it looks good; that run names no commit,
+compositor, renderer, host or scenario. Still unrecorded: a hardware GPU, Hyprland, GNOME,
+KDE, a console on X11, a screen reader, and a keyring. The fixes those runs led to are in
 a CI package of the branch only (commit `3493640`), whose AppImage was run in the same
 virtual machine on 2026-11-20, without the recovery gate
 ([report](docs/reports/2026-11-20-gpui-merged-tree.md)). The qualification described in the rest of this section was obtained with

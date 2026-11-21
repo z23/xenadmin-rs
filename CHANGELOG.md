@@ -290,8 +290,10 @@ again for that, because no published version reads format 5.
 
 ### Known issues
 
-No person has used the new interface in a window. It has run in windows only in virtual
-machines, with software rendering, input injected by a script and nobody at them
+On 2026-11-21 the operator ran a local build of the new interface and reported that it
+looks good. That run names no commit, compositor, renderer, host or scenario. The
+recorded window runs were in virtual machines, with software rendering, input injected
+by a script and nobody at them
 ([clean installation](docs/reports/2026-11-19-gpui-clean-install.md),
 [driven session](docs/reports/2026-11-19-gpui-vm-session.md)). In particular:
 

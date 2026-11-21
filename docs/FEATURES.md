@@ -16,7 +16,7 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 
 | Workflow | Milestone | Required behavior |
 | --- | --- | --- |
-| Desktop and protocol qualification | M0 | Real desktop window (shown with the Rune toolkit of the releases up to 0.19.0; not yet shown with the GPUI Kit front end that replaced it), direct XAPI probe, interactive console, dependency pins |
+| Desktop and protocol qualification | M0 | Real desktop window (shown with the Rune toolkit of the releases up to 0.19.0; a local build of the GPUI Kit front end was opened by the operator on 2026-11-21, with no scenario recorded), direct XAPI probe, interactive console, dependency pins |
 | Connection profiles | M1 | Multiple endpoints, credential lookup, session-only credentials, edit and remove |
 | TLS trust | M1 | System or custom CA verification, explicit per-endpoint trust, changed-certificate handling |
 | Pool discovery | M1 | Connect through a member, discover coordinator, remember verified members |
@@ -104,9 +104,12 @@ decorations were observed with injected input, and where a second start often sh
 nothing until a build of the fix marked the window urgent
 ([report](reports/2026-11-19-gpui-vm-session.md)); the package CI built of the merged tree
 on 2026-11-20 holds that fix and did the same in that machine
-([report](reports/2026-11-20-gpui-merged-tree.md)). No person has used it in a window, on
-no hardware GPU and on no other compositor. Until the operator's run at a desk is
-recorded, a build from the main branch is not yet what this list describes.
+([report](reports/2026-11-20-gpui-merged-tree.md)). On 2026-11-21 the operator ran a local
+build, reported that it looks good, and directed that this tree is the main version. That
+run names no compositor, renderer, host or scenario, so a hardware GPU, a compositor other
+than the sway of the virtual machines, the recovery gate and a screen reader stay
+unrecorded. The supported list above still rests on the evidence named in this section.
+The main branch is this front end.
 
 Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
 implemented, in most cases with a recorded successful run on the lab, but how it fails is

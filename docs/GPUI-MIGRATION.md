@@ -5,7 +5,9 @@ Nov 13, 2026 · @Brendan Hiley
 ## Status
 
 Written on 2026-11-19, after the cutover of the code, and brought up to date the same day after the
-first runs of the client in windows (in virtual machines) and the merge of that day's branches. The
+first runs of the client in windows (in virtual machines) and the merge of that day's branches, and
+on 2026-11-21 after the operator ran a local build and directed that this tree become the main
+version. The
 plan below is kept as it was written on 2026-11-13 and is not updated: where it says
 `crates/xenadmin-gpui`, "the Rune binary" or "until cutover", it describes the time before this
 status. The [ledger](GPUI-MIGRATION-LEDGER.md) records where the port differs from it.
@@ -14,7 +16,9 @@ The words are used strictly. *Fixtures* and *headless*: tests on the Kit's test 
 renders, no window. *Live, headless*: the real shell and core against the lab, no window. *In a
 virtual machine*: the packaged client in a real window, inside a QEMU machine that showed nothing on
 the workstation, drawn by a software renderer, with input injected by a script and nobody at it.
-None of these is a person at a desk.
+None of these is a person at a desk. On 2026-11-21 the operator ran a local build at their own
+machine and reported that it looks good. That run names no commit, compositor, renderer, host or
+scenario.
 
 Done:
 
@@ -95,8 +99,10 @@ Done:
 
 Not established, and to be said wherever the front end's status is given:
 
-- No person has used the client in a window. Nothing was drawn by a hardware GPU. The only
-  compositor it has run on is sway 1.12 (and a headless Sway, without input, for the clean installation): not
+- On 2026-11-21 the operator ran a local build and reported that it looks good, and directed that
+  this tree become the main version. That run names no commit, compositor, renderer, host or
+  scenario. Nothing is recorded as drawn by a hardware GPU. The only compositor a recorded window
+  run has used is sway 1.12 (and a headless Sway, without input, for the clean installation): not
   Hyprland, which is the operator's, not GNOME, not KDE. On X11 the window opened once, without a
   console; the keystroke fallback of the console has not run in a window.
 - The Wayland key path (route A) has run with injected keys on sway only: no real keyboard, no
@@ -146,20 +152,24 @@ operator may hold that a person's run is needed and say so.
 
 What remains, and is the operator's:
 
-1. A run of a package at a desk: a person, a hardware GPU, the operator's compositor, with the
-   recovery gate of `README.md` (with Xen Orchestra shut down: locate the XO VM, start it, use its
-   console) and a console typed into with a real keyboard. The findings of the runs in virtual
-   machines that need a decision are listed in their reports; of 2026-11-20, the pointer press that
-   does nothing while a key repeats in a console.
+1. A recorded desk run of a package: the recovery gate of `README.md` (with Xen Orchestra shut
+   down: locate the XO VM, start it, use its console) and a console typed into with a real
+   keyboard, on a hardware GPU and on the operator's compositor. The local run of 2026-11-21
+   names none of these. The findings of the runs in virtual machines that need a decision are
+   listed in their reports; of 2026-11-20, the pointer press that does nothing while a key
+   repeats in a console.
 2. The word on the 22 actions that stay outside a row of commands (gate G2, criterion 5), and on
    whether the criteria met in a virtual machine are accepted as met.
 3. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
    coordinator handover, and a keyring.
 4. The release, with its version (decision D10), its report and its tag.
-5. The repository description on GitHub ("with Rune UI"), the main branch and the old pull requests.
+5. Done by the operator's direction of 2026-11-21, carried out with the commit that records it.
+   `main` is this tree. The repository description names GPUI Kit where it named Rune UI. Pull
+   requests 19, 20, 22, 23 and 24 are closed; each of those branches is contained in this tree.
 
 The merged tree was pushed on 2026-11-20 (`gpui-migration` at `3493640`) and CI built its packages,
-which was the first item of this list until then.
+which was the first item of this list until then. On 2026-11-21 the operator directed that the
+tree become the main version, and `main` was moved to the commit that records that direction.
 
 A screen reader run by a person is what would allow the accessibility statement to change (decision
 D11); until one is recorded it stays "not supported".

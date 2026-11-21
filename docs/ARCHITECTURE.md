@@ -79,8 +79,10 @@ Keep these workspace boundaries small:
 
 The front end was moved from Rune to GPUI Kit; the
 [migration plan](GPUI-MIGRATION.md) owns the sequence, the target layout and the rules, and
-its "Status" section says what of the new front end is established (it has run in windows
-only in virtual machines, with software rendering and nobody at them). Until the cutover `crates/xenadmin-desktop` was the Rune front end
+its "Status" section says what of the new front end is established (recorded window runs
+are in virtual machines, with software rendering and nobody at them; on 2026-11-21 the
+operator ran a local build, reported that it looks good, and directed that this tree
+become the main version, with no scenario named). Until the cutover `crates/xenadmin-desktop` was the Rune front end
 and the GPUI one was `crates/xenadmin-gpui`; the Rune crate is removed and the GPUI crate
 has taken its name. Between the model and the front end the ownership is:
 

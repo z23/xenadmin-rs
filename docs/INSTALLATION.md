@@ -57,7 +57,8 @@ has been opened in a headless Sway (the wlroots headless backend: it offers a se
 without Wayland, both in a virtual machine with software rendering, and the AppImage has
 been driven through a Wayland session (sway) in another, with input injected at the
 machine's devices ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md));
-no person has used the new front end in a window yet, and it has not drawn on a hardware
+on 2026-11-21 the operator ran a local build and reported that it looks good, with no
+compositor or renderer named, and it has not drawn on a hardware
 GPU. Screen readers are not supported and
 multi-monitor use is unverified.
 

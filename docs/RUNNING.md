@@ -51,7 +51,7 @@ touching the state directory.
 The window is at least 800 by 600. Below a width of 1100 the navigation pane is behind
 its toggle.
 
-Status of the window itself: no person has used the GPUI Kit front end in a window yet. It
+Status of the window itself: on 2026-11-21 the operator ran a local build and reported that it looks good. The run names no commit, compositor, renderer, host or scenario. It
 passes its tests on the toolkit's headless test platform, every scene renders off screen,
 and it has been driven headless against the lab
 ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-live-headless.md)). The packaged client has been

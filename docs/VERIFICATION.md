@@ -25,7 +25,8 @@ input injected at the machine's devices
 headless report were run again on the merged tree, and the AppImage CI built of that tree
 (commit `3493640`) was driven in the session's machine through its start and the ways it
 fails, a second start, a guest's console with a held key, the Snapshots tab and its close
-([report](reports/2026-11-20-gpui-merged-tree.md)). No person has used it in a window, it
+([report](reports/2026-11-20-gpui-merged-tree.md)). On 2026-11-21 the operator ran a local
+build and reported that it looks good; the run names no compositor or renderer. It
 has not drawn on a hardware GPU, and no person has used a screen reader with it; the gate
 reports of 2026-11-19 (`reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) give each
 criterion's state.
