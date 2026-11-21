@@ -339,10 +339,12 @@ by a script and nobody at them
 - No keyring was present in any run of the new interface: a saved password and
   connection at startup have not been tried with it.
 - The lab runs of 2026-11-19 were headless: the interface was driven without a window.
-  Still not run through the new interface: a coordinator change and maintenance of the
-  coordinator, the host's own refusal of an evacuation, and an operation in flight while
-  the coordinator's toolstack restarts; the core's behaviour there is unchanged and was
-  recorded with earlier versions.
+  On 2026-11-21 a headless run handed the coordinator to the member and back, then
+  entered and left maintenance on that coordinator; it listed no resident guest, so
+  nothing was evacuated
+  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). Still not run through the new
+  interface: the host's own refusal of an evacuation, and an operation in flight while
+  the coordinator's toolstack restarts.
 - Found in those runs and not changed
   ([report](docs/reports/2026-11-19-gpui-live-paths.md), findings;
   [report](docs/reports/2026-11-19-gpui-vm-session.md), findings 3 and 4):

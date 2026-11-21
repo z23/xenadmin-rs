@@ -94,8 +94,10 @@ same day added the paths the first left out: the refused reviews, a cancelled mi
 migration with disks, a snapshot with memory, a host's toolstack restart, reboot and
 shutdown through maintenance, and recovery after a restart of the coordinator's toolstack,
 a lost member and a certificate that is not the pinned one
-([report](reports/2026-11-19-gpui-live-paths.md), which lists what is still left out,
-among it a coordinator change through the interface and the keyring). The packaged client
+([report](reports/2026-11-19-gpui-live-paths.md), which lists what that day left out).
+A later headless run handed the coordinator to the member and back and took that
+coordinator through maintenance with no resident guest
+([report](reports/2026-11-21-gpui-coordinator.md)). A keyring was not part of it. The packaged client
 has run in windows only in virtual machines, with software rendering and nobody at them:
 on clean Ubuntu 24.04 and Arch systems
 ([report](reports/2026-11-19-gpui-clean-install.md)) and in a driven Wayland session on

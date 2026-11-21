@@ -111,6 +111,8 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   ([successful paths](docs/reports/2026-11-19-gpui-live-headless.md),
   [refusals, interruptions and recoveries](docs/reports/2026-11-19-gpui-live-paths.md)),
   the first of them repeated on the merged tree on 2026-11-20.
-  A coordinator change and maintenance of the coordinator through the front end, the
-  host's own refusal of an evacuation, and a saved password in the keyring were not run
-  through it, and the experimental areas were verified on fixtures and by rendering only.
+  A coordinator handover to the member and back, and maintenance of that coordinator
+  with no resident guest, were run headless on 2026-11-21
+  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). The host's own refusal of an
+  evacuation and a saved password in the keyring were not run through it, and the
+  experimental areas were verified on fixtures and by rendering only.

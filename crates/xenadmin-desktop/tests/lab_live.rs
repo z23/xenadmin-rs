@@ -5705,3 +5705,252 @@ fn lab_p3_recovery_changed_certificate() {
     client.close();
     evidence.finish();
 }
+
+/// Hand the coordinator role to the other host and back, then enter and
+/// leave maintenance on the lab's first host while it is the coordinator.
+/// Guests that maintenance moved are migrated back. The role ends on the
+/// first host and both hosts are enabled.
+///
+/// Authorized on 2026-11-21 for the disposable lab. A handover asks for the
+/// pool UUID and does not evacuate guests. High availability must already
+/// be off; the command refuses otherwise.
+#[test]
+#[ignore]
+fn lab_p3_coordinator_handover_and_maintenance() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-coordinator-handover-and-maintenance");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let home_ip = lab.hosts[0].ip.clone();
+    let (home_id, home_name) = host_at(&mut client, &home_ip);
+    let (member_id, member_name) = client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        let member = inventory
+            .hosts
+            .values()
+            .find(|host| host.id != home_id && host.enabled)
+            .expect("an enabled member");
+        (member.id, member.name.clone())
+    });
+    let ha = client.model(|m| {
+        m.inventory
+            .as_ref()
+            .expect("inventory")
+            .details
+            .pool
+            .as_ref()
+            .and_then(|pool| pool.ha_enabled)
+    });
+    evidence.step(
+        "before",
+        json!({
+            "home": home_name,
+            "member": member_name,
+            "coordinator": coordinator_name(&mut client),
+            "ha_enabled": ha,
+        }),
+    );
+    assert_eq!(ha, Some(false), "handover is refused while HA is enabled");
+
+    if coordinator_id(&mut client) != home_id {
+        hand_over(
+            &mut client,
+            &mut evidence,
+            home_id,
+            &home_name,
+            "return-home",
+        );
+    }
+    hand_over(
+        &mut client,
+        &mut evidence,
+        member_id,
+        &member_name,
+        "to-member",
+    );
+    hand_over(&mut client, &mut evidence, home_id, &home_name, "back-home");
+    assert_eq!(coordinator_id(&mut client), home_id);
+
+    let host = client
+        .model(|m| ObjectRef::host(m.inventory.as_ref().expect("inventory").pool_id, home_id));
+    let residents: Vec<(ObjectRef, VmId, String)> = client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        inventory
+            .guests()
+            .filter(|vm| vm.host == Some(home_id) && !vm.is_template)
+            .map(|vm| {
+                (
+                    ObjectRef::vm(inventory.pool_id, vm.id),
+                    vm.id,
+                    vm.name.clone(),
+                )
+            })
+            .collect()
+    });
+    evidence.step(
+        "the coordinator before maintenance",
+        json!({ "server": home_name, "guests": residents.iter().map(|(_, _, name)| name).collect::<Vec<_>>() }),
+    );
+    client.select(&host);
+    client.tab(TabId::General);
+    assert_eq!(
+        client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref(),
+        Some("Enter Maintenance Mode")
+    );
+    client.menu(Menu::Server, "server.maintenance");
+    assert_eq!(client.front().as_deref(), Some("host-enter-maintenance"));
+    for (_, _, name) in &residents {
+        assert!(
+            client.describes(&format!("Move guest: {name}")),
+            "the review does not name {name}"
+        );
+    }
+    client.snap(&mut evidence, "coordinator-enter-maintenance");
+    client.press("host-confirm");
+    let took = client.wait(
+        "the coordinator is in maintenance and its guests have moved",
+        Duration::from_secs(900),
+        |client| {
+            unfinished_resources(client) == 0
+                && !host_enabled(client, home_id)
+                && client.model(|m| {
+                    !m.inventory
+                        .as_ref()
+                        .expect("inventory")
+                        .guests()
+                        .any(|vm| vm.host == Some(home_id) && !vm.is_template)
+                })
+        },
+    );
+    let states = resource_states(&mut client);
+    evidence.step(
+        "the coordinator is in maintenance",
+        json!({ "seconds": seconds(took), "operations": states }),
+    );
+    assert!(
+        states.iter().all(|state| state == "Succeeded"),
+        "{states:?}"
+    );
+    client.menu(Menu::Server, "server.maintenance");
+    assert_eq!(client.front().as_deref(), Some("host-exit-maintenance"));
+    client.snap(&mut evidence, "coordinator-exit-maintenance");
+    client.press("host-confirm");
+    let took = client.wait(
+        "the coordinator is enabled again",
+        Duration::from_secs(420),
+        |client| {
+            client.front().is_none()
+                && unfinished_resources(client) == 0
+                && host_enabled(client, home_id)
+        },
+    );
+    let states = resource_states(&mut client);
+    evidence.step(
+        "the coordinator is enabled again",
+        json!({ "seconds": seconds(took), "operations": states }),
+    );
+    assert!(
+        states.iter().all(|state| state == "Succeeded"),
+        "{states:?}"
+    );
+    for (object, vm, name) in &residents {
+        if power_state(&mut client, *vm) == PowerState::Running
+            && resident_host(&mut client, *vm) != Some(home_id)
+        {
+            let took = migrate(
+                &mut client,
+                &mut evidence,
+                object,
+                *vm,
+                (home_id, &home_name),
+                &format!("back-{name}"),
+            );
+            evidence.note(&format!("{name}_moved_back_seconds"), json!(took));
+        }
+    }
+    assert_eq!(coordinator_id(&mut client), home_id);
+    assert!(
+        client.model(|m| {
+            m.inventory
+                .as_ref()
+                .expect("inventory")
+                .hosts
+                .values()
+                .all(|host| host.enabled)
+        }),
+        "a host is still disabled"
+    );
+    client.close();
+    evidence.finish();
+}
+
+fn host_at(client: &mut Client, address: &str) -> (HostId, String) {
+    client.model(|m| {
+        let host = m
+            .inventory
+            .as_ref()
+            .expect("inventory")
+            .hosts
+            .values()
+            .find(|host| host.address == address)
+            .unwrap_or_else(|| panic!("no host at {address}"));
+        (host.id, host.name.clone())
+    })
+}
+
+fn coordinator_id(client: &mut Client) -> HostId {
+    client.model(|m| {
+        m.inventory
+            .as_ref()
+            .expect("inventory")
+            .coordinator
+            .expect("coordinator")
+    })
+}
+
+fn coordinator_name(client: &mut Client) -> String {
+    let id = coordinator_id(client);
+    client.model(|m| {
+        m.inventory.as_ref().expect("inventory").hosts[&id]
+            .name
+            .clone()
+    })
+}
+
+/// Select the host that is to become coordinator and confirm the handover.
+fn hand_over(client: &mut Client, evidence: &mut Evidence, host: HostId, name: &str, tag: &str) {
+    let object =
+        client.model(|m| ObjectRef::host(m.inventory.as_ref().expect("inventory").pool_id, host));
+    let pool_uuid = client.model(|m| m.inventory.as_ref().expect("inventory").pool_id.to_string());
+    client.select(&object);
+    client.menu(Menu::Server, "pool.designate-coordinator");
+    assert_eq!(
+        client.front().as_deref(),
+        Some("pool-change-handover"),
+        "Hand Over Coordinator did not open for {name}"
+    );
+    client.type_into("pool-confirmation", &pool_uuid);
+    client.snap(evidence, &format!("{tag}-review"));
+    client.press("pool-confirm");
+    let took = client.wait(
+        &format!("{name} is the coordinator and both hosts are enabled"),
+        Duration::from_secs(600),
+        |client| {
+            client.front().is_none()
+                && client.model(|m| {
+                    m.inventory.as_ref().is_some_and(|inventory| {
+                        inventory.coordinator == Some(host)
+                            && inventory.hosts.values().all(|host| host.enabled)
+                            && m.snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| snapshot.is_current())
+                    })
+                })
+        },
+    );
+    evidence.step(
+        &format!("{tag}: {name} is the coordinator"),
+        json!({ "seconds": seconds(took), "coordinator": coordinator_name(client) }),
+    );
+}

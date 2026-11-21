@@ -873,17 +873,41 @@ impl Client {
         if self.chrome("popup-menu").is_none() {
             return Err("no menu opened".into());
         }
+        self.scroll_menu_item_into_view("popup-menu", index);
         self.on(|window, cx| window.within("popup-menu").click(index, cx));
         if let Some(inner) = inner {
             self.wait("the submenu opened", Duration::from_secs(3), |client| {
                 client.chrome("submenu").is_some()
             });
+            self.scroll_menu_item_into_view("submenu", inner);
             self.on(|window, cx| window.within("submenu").click(inner, cx));
         }
         self.wait("the menu closed", Duration::from_secs(3), |client| {
             client.chrome("popup-menu").is_none()
         });
         Ok(())
+    }
+
+    /// A long menu draws items below the window. Wheel the list until the
+    /// item is on screen; a click on one that is not visible is refused.
+    fn scroll_menu_item_into_view(&mut self, menu: &'static str, index: usize) {
+        self.on(|window, cx| {
+            for _ in 0..30 {
+                if window
+                    .within(menu)
+                    .try_find(index)
+                    .is_some_and(|element| element.visible())
+                {
+                    return;
+                }
+                window.scroll(
+                    menu,
+                    ScrollDelta::Pixels(point(px(0.), px(-160.))),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
+        });
     }
 
     /// Chooses a command from a menu of the menu bar with the pointer.
