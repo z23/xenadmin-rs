@@ -118,8 +118,7 @@ on 2026-11-20 holds that fix and did the same in that machine
 ([report](reports/2026-11-20-gpui-merged-tree.md)). On 2026-11-21 the operator ran a local
 build, reported that it looks good, and directed that this tree is the main version. That
 run names no compositor, renderer, host or scenario, so a hardware GPU, a compositor other
-than the sway of the virtual machines, the recovery gate and a screen reader stay
-unrecorded. The supported list above still rests on the evidence named in this section.
+than the sway of the virtual machines, and the recovery gate stay unrecorded. The supported list above still rests on the evidence named in this section.
 The main branch is this front end.
 
 Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
@@ -151,9 +150,10 @@ reason of a disabled menu item is in its name or a tooltip, not an accessible
 description). No person has used a screen reader with either. With the GPUI Kit front end
 Orca was started once in a virtual machine, on the demo's views, and what it would speak
 was read from its log: names and roles, heard by nobody
-([report](reports/2026-11-19-gpui-vm-session.md), section G). The statement stays "not
-supported" until a screen reader run by a person is recorded. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
-when it meets one.
+([report](reports/2026-11-19-gpui-vm-session.md), section G). On 2026-11-22 the operator
+decided that screen readers will not be supported, so the statement stays "not supported"
+and a screen reader run is not required. Hosts other than XCP-ng 8.3 are not qualified,
+and the client says so when it meets one.
 
 The four product decisions the live report had left open (findings 25, 29, 30 and 32) all
 concern experimental areas and stay as they are: no VIF rate limit unless the host

@@ -82,9 +82,8 @@ M0 resolves these questions without changing the product goal:
   (Asked of Rune at the time. For GPUI Kit the same three are open in a different way:
   the portal file chooser and the Wayland key path of the console have run in a window
   only in a virtual machine with injected input. On 2026-11-21 the operator opened a
-  local build and reported that it looks good, with no scenario named, and no person has
-  used a screen reader
-  (Orca was started there and its log read); see the "Status" section of the
+  local build and reported that it looks good, with no scenario named. On 2026-11-22 the
+  operator decided that screen readers will not be supported; see decision D11 in the
   [migration plan](GPUI-MIGRATION.md).)
 - Which release format works on the target systems, including software-rendered workstations?
 

@@ -98,9 +98,6 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   held and repeating.
   None of that is established for a real keyboard, for Hyprland, GNOME or KDE, or for X11
   with a console; the listener of route A has no test.
-- No person has used a screen reader with it. In the same virtual machine the client was on
-  the accessibility bus and Orca wrote names and roles for the demo's views to its log;
-  nobody heard it. The accessibility statement stays "not supported".
 - The packaged builds that were installed and run are the archive and the AppImage CI built
   at commit `e808a2f`, in those virtual machines only. The recovery gate of README.md was
   repeated with that AppImage in the driven session, not by a person and not on a release

@@ -21,8 +21,8 @@ each gate: the port is complete and verified on fixtures and headless, the suppo
 were driven headless against the lab on 2026-11-19, and the packaged client has run in
 windows only in virtual machines, with software rendering and nobody at them. On
 2026-11-21 the operator ran a local build, reported that it looks good, and directed that
-this tree become the main version; that run names no scenario, and no screen reader run
-is recorded. Milestones M0 to
+this tree become the main version; that run names no scenario. On 2026-11-22 the
+operator decided that screen readers will not be supported. Milestones M0 to
 M6 below are kept as they were written, with Rune as the toolkit they name; where one of
 them speaks of a Rune window or a Rune fixture it describes how that milestone was first
 met, not the present front end.

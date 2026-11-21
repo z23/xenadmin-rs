@@ -64,7 +64,8 @@ to the lab, passed the recovery gate below and typed into consoles through its W
 keyboard path ([report](docs/reports/2026-11-19-gpui-vm-session.md)). On 2026-11-21 the
 operator ran a local build and reported that it looks good; that run names no commit,
 compositor, renderer, host or scenario. Still unrecorded: a hardware GPU, Hyprland, GNOME,
-KDE, a console on X11, a screen reader, and a keyring. The fixes those runs led to are in
+KDE, and a console on X11. A keyring restore was recorded headless on 2026-11-21
+([report](docs/reports/2026-11-21-gpui-keyring.md)). Screen readers will not be supported. The fixes those runs led to are in
 a CI package of the branch only (commit `3493640`), whose AppImage was run in the same
 virtual machine on 2026-11-20, without the recovery gate
 ([report](docs/reports/2026-11-20-gpui-merged-tree.md)). The qualification described in the rest of this section was obtained with

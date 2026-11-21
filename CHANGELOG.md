@@ -122,9 +122,9 @@ again for that, because no published version reads format 5.
     the packages. The archives therefore carry no font notices any more.
   - Accessibility: screen readers are not supported, as before. The new interface gives
     its elements roles, names and descriptions. Orca was started with it once, in a
-    virtual machine, and what it would speak for the demo's views was read from its log;
-    no person has used a screen reader with it, and the statement stays "not supported"
-    until such a run is recorded.
+    virtual machine, and what it would speak for the demo's views was read from its log.
+    On 2026-11-22 the operator decided that screen readers will not be supported, so the
+    statement stays "not supported".
 
   How far this is verified, which is less than for the interface it replaces: every area
   of the old interface is ported, and the new one passes its model's tests, its window
@@ -313,8 +313,8 @@ by a script and nobody at them
   US layout) is experimental and has not run in a window. Whether the desktop's busy
   indication ends when the window appears in an X session has not been looked at.
 - Over a console the local pointer stays visible and the guest's own cursor is not drawn.
-- No person has used a screen reader with it. The reason a menu item is disabled is in
-  its name or a tooltip, not in an accessible description.
+- The reason a menu item is disabled is in its name or a tooltip, not in an accessible
+  description.
 - The packages that have been installed and run (archive and AppImage, on clean Ubuntu
   24.04 and Arch systems, and the AppImage through the recovery gate: find the Xen
   Orchestra VM, start it and use its console with Xen Orchestra down) are those CI built

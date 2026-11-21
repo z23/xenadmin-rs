@@ -109,8 +109,6 @@ Not established, and to be said wherever the front end's status is given:
 - The Wayland key path (route A) has run with injected keys on sway only: no real keyboard, no
   input method, no compose key. Clipboard without focus, the cursor over a console, pointer motion
   inside a guest and pixel-exact fit and actual size were not examined.
-- No person has used a screen reader with it, and nobody heard one: Orca's output was read from its
-  log, for the demo's views.
 - A saved password was restored on a second start from a private keyring, not the
   operator's, and not from a locked store
   ([report](reports/2026-11-21-gpui-keyring.md)).
@@ -189,8 +187,8 @@ The merged tree was pushed on 2026-11-20 (`gpui-migration` at `3493640`) and CI 
 which was the first item of this list until then. On 2026-11-21 the operator directed that the
 tree become the main version, and `main` was moved to the commit that records that direction.
 
-A screen reader run by a person is what would allow the accessibility statement to change (decision
-D11); until one is recorded it stays "not supported".
+Screen readers will not be supported. The operator decided that on 2026-11-22 (decision D11).
+The statement stays "not supported".
 
 ## Summary
 
@@ -968,7 +966,7 @@ The driven-session harness keeps its method: a nested compositor with a headless
 - `large-inventory`: scroll and selection frame times, recorded at G2 and G5.
 - Console: the S1 frame test, repeated at G3 on the packaged build.
 - Idle: no repaint while nothing changes.
-- Accessibility: store the tree dump of the main scenes. `docs/FEATURES.md` keeps "screen readers: not supported" until a screen reader has actually been used and the run is recorded.
+- Accessibility: store the tree dump of the main scenes. `docs/FEATURES.md` keeps "screen readers: not supported". A screen reader run is not required.
 
 ## Dependencies, build, packaging and licensing
 
@@ -1136,7 +1134,7 @@ Agents proceed on the defaults below. Nothing here blocks Phase 0 or Phase 1. An
 | D8 | Theme | Kit default tokens, the current accent colour, light and dark | Agent | G2 |
 | D9 | Crate and binary names after cutover | Crate `xenadmin-desktop`, binary `xenadmin-rs` | Agent | G5 |
 | D10 | Version of the cutover release | The next minor version after the last Rune release | Operator | G5 |
-| D11 | Screen reader support statement | Remains "not supported" until a screen reader run is recorded | Already decided in `docs/FEATURES.md` | G5 |
+| D11 | Screen reader support statement | Not supported. On 2026-11-22 the operator decided a screen reader run will not be pursued | Operator | G5 |
 | D12 | Kit upgrades during the migration | Stay on 0.9.1 unless a needed fix lands upstream | Agent, per gate | Each gate |
 | D13 | Experimental rows that are costly to port | Port all rows. Deferring a row is an operator decision recorded in the ledger | Operator | G4 |
 
