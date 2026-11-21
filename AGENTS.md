@@ -119,5 +119,6 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   in flight during a restart of the coordinator's toolstack was run headless
   the same day
   ([report](docs/reports/2026-11-21-gpui-inflight-toolstack.md)). A saved password
-  in the keyring was not run through it, and the experimental areas were verified
-  on fixtures and by rendering only.
+  in a private keyring restored the connection on a second start
+  ([report](docs/reports/2026-11-21-gpui-keyring.md)). The experimental areas were
+  verified on fixtures and by rendering only.

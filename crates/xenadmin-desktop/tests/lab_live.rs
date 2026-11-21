@@ -148,6 +148,10 @@ fn pin_certificate(
 /// connection. Returns the coordinator's fingerprint as the review showed
 /// it.
 fn add_server(client: &mut Client, lab: &Lab, evidence: &mut Evidence) -> String {
+    connect_new(client, lab, evidence, false)
+}
+
+fn connect_new(client: &mut Client, lab: &Lab, evidence: &mut Evidence, remember: bool) -> String {
     assert_eq!(client.model(|m| m.active_tab()), TabId::Home);
     client
         .try_local("server.add")
@@ -173,6 +177,10 @@ fn add_server(client: &mut Client, lab: &Lab, evidence: &mut Evidence) -> String
     let member = pin_certificate(client, lab, evidence, 1);
     assert_ne!(fingerprint, member);
     client.snap(evidence, "certificates-pinned");
+    if remember {
+        set_checkbox(client, "remember-password", true);
+        set_checkbox(client, "profile-auto-connect", true);
+    }
 
     client.press("connect");
     let took = client.wait(
@@ -6529,6 +6537,64 @@ fn acknowledge_unknown(client: &mut Client, object: &ObjectRef, vm: VmId) -> boo
         acknowledged = true;
     }
     acknowledged
+}
+
+/// Save the lab password in a Secret Service provider and connect again
+/// from a second start, with nothing typed. The provider is the one on
+/// this process's session bus. The run gives that bus its own runtime
+/// directory so it is not the operator's keyring.
+#[test]
+#[ignore]
+fn lab_p3_keyring_restore() {
+    let lab = Lab::load();
+    lab_support::assert_fresh_state();
+    let mut evidence = Evidence::new(&lab, "p3-keyring-restore");
+    let mut client = Client::start(Platform::Rendered);
+    connect_new(&mut client, &lab, &mut evidence, true);
+    let saved = client.wait_for(Duration::from_secs(30), &mut |client| {
+        client.model(|model| {
+            model.workspace.profiles().iter().any(|profile| {
+                profile.auto_connect
+                    && profile.credential_mode == xenadmin_core::CredentialMode::SecretService
+            })
+        })
+    });
+    let leaked: Vec<String> = files_under(&lab_support::state_directory())
+        .into_iter()
+        .filter(|path| lab_support::holds_password(&lab, path))
+        .map(|path| path.display().to_string())
+        .collect();
+    evidence.step(
+        "the connection remembers its password",
+        json!({ "saved": saved.is_some(), "password_in_state_directory": !leaked.is_empty() }),
+    );
+    assert!(saved.is_some(), "the profile was not saved for the keyring");
+    assert!(leaked.is_empty(), "the password is in {leaked:?}");
+    client.close();
+
+    let mut client = Client::start(Platform::Rendered);
+    let restored = client.wait_for(Duration::from_secs(120), &mut |client| {
+        client.model(|model| {
+            model.inventory.is_some()
+                && model
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.is_current())
+        })
+    });
+    let said = connection_status(&mut client);
+    client.snap(&mut evidence, "second-start");
+    evidence.step(
+        "a second start connects from the keyring",
+        json!({ "restored": restored.is_some(), "status": said }),
+    );
+    assert!(
+        restored.is_some(),
+        "the second start did not connect: {said}"
+    );
+    assert!(said.contains("Connected"), "{said:?}");
+    client.close();
+    evidence.finish();
 }
 
 fn start_guest(client: &mut Client, vm: VmId) -> bool {

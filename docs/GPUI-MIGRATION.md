@@ -111,7 +111,9 @@ Not established, and to be said wherever the front end's status is given:
   inside a guest and pixel-exact fit and actual size were not examined.
 - No person has used a screen reader with it, and nobody heard one: Orca's output was read from its
   log, for the demo's views.
-- No keyring: a saved password and connection at startup have not been tried with the new front end.
+- A saved password was restored on a second start from a private keyring, not the
+  operator's, and not from a locked store
+  ([report](reports/2026-11-21-gpui-keyring.md)).
 - The package that holds the fixes above is a CI build of the branch (run 44658600102, commit
   `3493640` of `gpui-migration`, after which the branch has changed in documents only), not a
   release artifact. Of it only the AppImage
@@ -133,7 +135,7 @@ Not established, and to be said wherever the front end's status is given:
   known.
 - The recovery gate has not been run on a release artifact (there is none), nor by a person, nor
   with the package of `3493640`.
-- Live, still missing: a keyring. A coordinator handover to the member and back, and
+- A coordinator handover to the member and back, and
   maintenance of that coordinator with no resident guest, were run headless on 2026-11-21
   ([report](reports/2026-11-21-gpui-coordinator.md)). The host's refusal to evacuate a
   running diskless VM, and a memory snapshot in flight during a restart of the
@@ -152,7 +154,7 @@ operator may hold that a person's run is needed and say so.
 | G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted. The session in a virtual machine added to several of those limits; none is closed for a real seat | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
 | G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer). Criterion 5: on 2026-11-21 the 22 actions were moved onto command rows, and the review finds none outside the allowed places in the states it shows; it does not show every state | [G2](reports/2026-11-19-gpui-gate-g2.md) |
-| G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage of `e808a2f`) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
+| G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage of `e808a2f`) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless. The four paths the G3 report left missing were run headless on 2026-11-21. The accepted forced shutdown during a migration stays unrun, and none of criterion 2 was run in a window; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
 | G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f` and again at `3493640`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
 
@@ -166,13 +168,15 @@ What remains, and is the operator's:
    repeats in a console.
 2. Whether the criteria met in a virtual machine are accepted as met. The 22 actions that
    stayed outside a command row were moved onto one on 2026-11-21, by the operator's direction.
-3. The live path still missing (gate G3, criterion 2) is a keyring. The coordinator
-   handover and maintenance of the coordinator were run headless on 2026-11-21
-   ([report](reports/2026-11-21-gpui-coordinator.md)). The host's refusal to evacuate a
-   running diskless VM, and a memory snapshot in flight during a restart of the
-   coordinator's toolstack, were run headless the same day
-   ([report](reports/2026-11-21-gpui-evacuation-refusal.md),
-   [report](reports/2026-11-21-gpui-inflight-toolstack.md)).
+3. The headless paths that were still open were run on 2026-11-21: the coordinator
+   handover and maintenance of the coordinator
+   ([report](reports/2026-11-21-gpui-coordinator.md)), the host's refusal to evacuate a
+   running diskless VM
+   ([report](reports/2026-11-21-gpui-evacuation-refusal.md)), a memory snapshot in flight
+   during a restart of the coordinator's toolstack
+   ([report](reports/2026-11-21-gpui-inflight-toolstack.md)), and a saved password restored
+   from a private keyring
+   ([report](reports/2026-11-21-gpui-keyring.md)). Gate G3 stays not passed.
 4. The release, with its version (decision D10), its report and its tag.
 5. Done by the operator's direction of 2026-11-21, carried out with the commit that records it.
    `main` is this tree. The repository description names GPUI Kit where it named Rune UI. Pull

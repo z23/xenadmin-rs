@@ -336,8 +336,6 @@ by a script and nobody at them
 - With a software renderer an open console can keep more than one CPU busy, and its
   picture was once seen about a minute behind the guest (same report, finding 2). Not
   looked at with a hardware GPU.
-- No keyring was present in any run of the new interface: a saved password and
-  connection at startup have not been tried with it.
 - The lab runs of 2026-11-19 were headless: the interface was driven without a window.
   On 2026-11-21 a headless run handed the coordinator to the member and back, then
   entered and left maintenance on that coordinator; it listed no resident guest, so
@@ -352,7 +350,10 @@ by a script and nobody at them
   were not submitted. Recheck did not repeat the writes. Start in that session
   was refused while the snapshot stayed unknown. A new session found no such
   operation and started the guest
-  ([report](docs/reports/2026-11-21-gpui-inflight-toolstack.md)).
+  ([report](docs/reports/2026-11-21-gpui-inflight-toolstack.md)). A saved
+  password in a private keyring, not the operator's, restored the connection
+  on a second start with nothing typed
+  ([report](docs/reports/2026-11-21-gpui-keyring.md)).
 - Found in those runs and not changed
   ([report](docs/reports/2026-11-19-gpui-live-paths.md), findings;
   [report](docs/reports/2026-11-19-gpui-vm-session.md), findings 3 and 4):
