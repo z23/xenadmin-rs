@@ -115,6 +115,9 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   with no resident guest, were run headless on 2026-11-21
   ([report](docs/reports/2026-11-21-gpui-coordinator.md)). The host's refusal to
   evacuate a running diskless VM was run headless the same day
-  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). A saved password
+  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). A memory snapshot
+  in flight during a restart of the coordinator's toolstack was run headless
+  the same day
+  ([report](docs/reports/2026-11-21-gpui-inflight-toolstack.md)). A saved password
   in the keyring was not run through it, and the experimental areas were verified
   on fixtures and by rendering only.

@@ -6290,3 +6290,290 @@ fn remove_vm(client: &mut Client, vm: VmId) {
         });
     }
 }
+
+/// A snapshot with the guest's memory, started from the VM menu, and a
+/// restart of the coordinator's toolstack while that snapshot is still
+/// unfinished. The window is watched until the connection is current again.
+/// Nothing else is started until two minutes after the restart.
+#[test]
+#[ignore]
+fn lab_p3_inflight_toolstack_restart() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-inflight-toolstack-restart");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, guest_name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, _) = servers(&mut client);
+    assert_eq!(coordinator.1, lab.hosts[0].name);
+    let pool =
+        client.model(|model| ObjectRef::pool(model.inventory.as_ref().expect("inventory").pool_id));
+    client.select(&object);
+    client.tab(TabId::General);
+    if power_state(&mut client, vm) != PowerState::Running {
+        client.menu(Menu::Vm, "vm.start");
+        if client.front().as_deref() == Some("power-confirm") {
+            client.press("power-confirm-submit");
+        }
+        client.wait("the guest is running", Duration::from_secs(180), |client| {
+            power_state(client, vm) == PowerState::Running
+        });
+    }
+    client.wait(
+        "the host allows a snapshot",
+        Duration::from_secs(180),
+        |client| {
+            client.model(|model| {
+                let Some(inventory) = model.inventory.as_ref() else {
+                    return false;
+                };
+                inventory
+                    .vms
+                    .get(&vm)
+                    .is_some_and(|guest| guest.can_snapshot)
+                    || snapshot_checkpoint(inventory, vm)
+            })
+        },
+    );
+    let memory = client.model(|model| {
+        model
+            .inventory
+            .as_ref()
+            .is_some_and(|inventory| snapshot_checkpoint(inventory, vm))
+    });
+    client.tab(TabId::Snapshots);
+    let name = format!("gpui-inflight-{}", stamp());
+    client.menu(Menu::Vm, "vm.snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-create"));
+    client.type_into("snapshot-name", &name);
+    set_checkbox(&mut client, "snapshot-memory", memory);
+    client.snap(&mut evidence, "snapshot-create");
+    client.press("confirm-snapshot");
+    let started = client.wait_for(Duration::from_secs(30), &mut |client| {
+        unfinished(client, vm) > 0
+    });
+    assert!(
+        started.is_some(),
+        "the snapshot never became an unfinished operation, so the toolstack was not restarted"
+    );
+    let at_request = guest_operations(&mut client, vm);
+    evidence.step(
+        "the snapshot is unfinished",
+        json!({ "name": name, "guest": guest_name, "operations": at_request }),
+    );
+    let asked = std::time::Instant::now();
+    let (accepted, said) = other_admin(&lab, &["restart-toolstack", &coordinator.0.to_string()]);
+    evidence.step(
+        "another administrator restarted the coordinator's toolstack",
+        json!({ "accepted": accepted, "said": said, "operations": guest_operations(&mut client, vm) }),
+    );
+    let mut when_away = Vec::new();
+    let mut captured_away = false;
+    let away = client.wait_for(Duration::from_secs(180), &mut |client| {
+        let away = connection_shown(client, &pool, &object)["current"] != json!(true);
+        if away && !captured_away {
+            when_away = guest_operations(client, vm);
+            captured_away = true;
+        }
+        away
+    });
+    let away_after = away.map(|_| seconds(asked.elapsed()));
+    if away.is_some() {
+        client.snap(&mut evidence, "while-away");
+    }
+    let returned = client.wait_for(Duration::from_secs(900), &mut |client| {
+        let shown = connection_shown(client, &pool, &object);
+        away.is_some() && shown["current"] == json!(true) && shown["has_inventory"] == json!(true)
+    });
+    let back_after = returned.map(|_| seconds(asked.elapsed()));
+    client.tab(TabId::Snapshots);
+    let listed = table_row(&mut client, "snapshots-table", &name).is_some();
+    let after = guest_operations(&mut client, vm);
+    let power = power_state(&mut client, vm);
+    evidence.step(
+        "the connection is current again",
+        json!({
+            "away_after_seconds": away_after,
+            "current_again_after_seconds": back_after,
+            "operations_when_away": when_away,
+            "operations_after": after,
+            "snapshot_listed": listed,
+            "power": format!("{power:?}"),
+        }),
+    );
+    let left = 130_f64 - asked.elapsed().as_secs_f64();
+    if left > 0. {
+        client.pass(Duration::from_secs_f64(left));
+    }
+    if client.model(|model| {
+        model
+            .operation_rows
+            .iter()
+            .any(|row| row.vm == vm && row.state == OperationState::OutcomeUnknown)
+    }) {
+        client.tab(TabId::General);
+        let recheck = client.try_local("operation.recheck");
+        evidence.step(
+            "recheck the unknown snapshot",
+            json!({ "offered": recheck.is_ok() }),
+        );
+        if recheck.is_ok() {
+            let _ = client.wait_for(Duration::from_secs(180), &mut |client| {
+                unfinished(client, vm) == 0
+            });
+        }
+    }
+    client.tab(TabId::Snapshots);
+    if table_row(&mut client, "snapshots-table", &name).is_some() {
+        let row = table_row(&mut client, "snapshots-table", &name).expect("the snapshot row");
+        client.press(&row);
+        if client.try_local("snapshot.delete").is_ok() {
+            client.press("confirm-snapshot");
+            let _ = client.wait_for(Duration::from_secs(240), &mut |client| {
+                client.front().is_none() && table_row(client, "snapshots-table", &name).is_none()
+            });
+        }
+    }
+    let still_listed = table_row(&mut client, "snapshots-table", &name).is_some();
+    let acknowledged = acknowledge_unknown(&mut client, &object, vm);
+    let running = start_guest(&mut client, vm);
+    let in_flight = when_away.iter().any(|row| {
+        row["state"]
+            .as_str()
+            .is_some_and(|state| state != "Succeeded")
+    });
+    evidence.step(
+        "after the quiet period",
+        json!({
+            "snapshot_still_listed": still_listed,
+            "acknowledged": acknowledged,
+            "power": format!("{:?}", power_state(&mut client, vm)),
+            "operations": guest_operations(&mut client, vm),
+        }),
+    );
+    assert!(accepted, "the restart was not accepted: {said}");
+    assert!(away.is_some(), "the window never showed the host away");
+    assert!(
+        returned.is_some(),
+        "the connection did not become current again"
+    );
+    assert!(
+        in_flight,
+        "the snapshot had already succeeded when the host went away: {when_away:?}"
+    );
+    assert!(
+        running,
+        "the guest was left halted: {:?}",
+        guest_operations(&mut client, vm)
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// The interrupted memory snapshot of `lab_p3_inflight_toolstack_restart`
+/// stays OutcomeUnknown until it is acknowledged, and Start is refused
+/// while it does. Acknowledge it and start the guest.
+#[test]
+#[ignore]
+fn lab_p3_acknowledge_interrupted_snapshot() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-acknowledge-interrupted-snapshot");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    evidence.step(
+        "before",
+        json!({ "guest": name, "power": format!("{:?}", power_state(&mut client, vm)), "operations": guest_operations(&mut client, vm) }),
+    );
+    let acknowledged = acknowledge_unknown(&mut client, &object, vm);
+    let running = start_guest(&mut client, vm);
+    evidence.step(
+        "after",
+        json!({ "acknowledged": acknowledged, "running": running, "operations": guest_operations(&mut client, vm) }),
+    );
+    assert!(running, "the guest is not running");
+    client.close();
+    evidence.finish();
+}
+
+fn acknowledge_unknown(client: &mut Client, object: &ObjectRef, vm: VmId) -> bool {
+    client.select(object);
+    client.tab(TabId::General);
+    let mut acknowledged = false;
+    for _ in 0..4 {
+        let unknown = client.model(|model| {
+            model
+                .operation_rows
+                .iter()
+                .any(|row| row.vm == vm && row.state == OperationState::OutcomeUnknown)
+        });
+        if !unknown {
+            break;
+        }
+        if client.try_local("operation.review-unknown").is_err() {
+            break;
+        }
+        if client.front().as_deref() != Some("unknown-outcome") {
+            break;
+        }
+        client.press("unknown-acknowledge");
+        let cleared = client.wait_for(Duration::from_secs(60), &mut |client| {
+            client.front().is_none()
+                && client.model(|model| {
+                    !model
+                        .operation_rows
+                        .iter()
+                        .any(|row| row.vm == vm && row.state == OperationState::OutcomeUnknown)
+                })
+        });
+        if cleared.is_none() {
+            break;
+        }
+        acknowledged = true;
+    }
+    acknowledged
+}
+
+fn start_guest(client: &mut Client, vm: VmId) -> bool {
+    if power_state(client, vm) == PowerState::Running {
+        return true;
+    }
+    client.tab(TabId::General);
+    if client.try_menu(Menu::Vm, "vm.start").is_err() {
+        return false;
+    }
+    if client.front().as_deref() == Some("power-confirm") {
+        client.press("power-confirm-submit");
+    }
+    client
+        .wait_for(Duration::from_secs(180), &mut |client| {
+            power_state(client, vm) == PowerState::Running
+        })
+        .is_some()
+}
+
+fn snapshot_checkpoint(inventory: &xenadmin_core::Inventory, vm: VmId) -> bool {
+    inventory.details.vms.get(&vm).is_some_and(|details| {
+        !details.blocked_operations.contains_key("checkpoint")
+            && details
+                .allowed_operations
+                .as_ref()
+                .is_some_and(|operations| {
+                    operations.iter().any(|operation| operation == "checkpoint")
+                })
+    })
+}
+
+fn guest_operations(client: &mut Client, vm: VmId) -> Vec<serde_json::Value> {
+    client.model(|model| {
+        model
+            .operation_rows
+            .iter()
+            .filter(|row| row.vm == vm)
+            .map(|row| {
+                json!({
+                    "action": row.action.label(),
+                    "state": format!("{:?}", row.state),
+                    "detail": row.detail,
+                })
+            })
+            .collect()
+    })
+}

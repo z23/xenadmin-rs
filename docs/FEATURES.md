@@ -101,8 +101,11 @@ coordinator through maintenance with no resident guest
 run opened Enter Maintenance Mode on a member that held a running diskless VM.
 The host rejected the operation with `VM_LACKS_FEATURE` and the member stayed
 enabled
-([report](reports/2026-11-21-gpui-evacuation-refusal.md)). A keyring was not part
-of either run. The packaged client has run in windows only in virtual machines,
+([report](reports/2026-11-21-gpui-evacuation-refusal.md)). A memory snapshot
+that was still in progress when the coordinator's toolstack restarted became
+an unknown outcome, and a new session started the guest
+([report](reports/2026-11-21-gpui-inflight-toolstack.md)). A keyring was not
+part of these runs. The packaged client has run in windows only in virtual machines,
 with software rendering and nobody at them:
 on clean Ubuntu 24.04 and Arch systems
 ([report](reports/2026-11-19-gpui-clean-install.md)) and in a driven Wayland session on

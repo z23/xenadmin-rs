@@ -346,9 +346,13 @@ by a script and nobody at them
   same day opened Enter Maintenance Mode on `h2` while a diskless VM was running
   there. The host rejected it with `VM_LACKS_FEATURE`, `h2` stayed enabled, and
   the VM was deleted
-  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). Still not run
-  through the new interface: an operation in flight while the coordinator's
-  toolstack restarts.
+  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). A memory snapshot
+  that was still Tracking when the coordinator's toolstack restarted became
+  OutcomeUnknown. The window said the connection had closed and later steps
+  were not submitted. Recheck did not repeat the writes. Start in that session
+  was refused while the snapshot stayed unknown. A new session found no such
+  operation and started the guest
+  ([report](docs/reports/2026-11-21-gpui-inflight-toolstack.md)).
 - Found in those runs and not changed
   ([report](docs/reports/2026-11-19-gpui-live-paths.md), findings;
   [report](docs/reports/2026-11-19-gpui-vm-session.md), findings 3 and 4):
