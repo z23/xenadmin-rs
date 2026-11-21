@@ -97,8 +97,13 @@ a lost member and a certificate that is not the pinned one
 ([report](reports/2026-11-19-gpui-live-paths.md), which lists what that day left out).
 A later headless run handed the coordinator to the member and back and took that
 coordinator through maintenance with no resident guest
-([report](reports/2026-11-21-gpui-coordinator.md)). A keyring was not part of it. The packaged client
-has run in windows only in virtual machines, with software rendering and nobody at them:
+([report](reports/2026-11-21-gpui-coordinator.md)). The same day another headless
+run opened Enter Maintenance Mode on a member that held a running diskless VM.
+The host rejected the operation with `VM_LACKS_FEATURE` and the member stayed
+enabled
+([report](reports/2026-11-21-gpui-evacuation-refusal.md)). A keyring was not part
+of either run. The packaged client has run in windows only in virtual machines,
+with software rendering and nobody at them:
 on clean Ubuntu 24.04 and Arch systems
 ([report](reports/2026-11-19-gpui-clean-install.md)) and in a driven Wayland session on
 sway, where its keyboard path into a console, its clipboard, file chooser, fullscreen and

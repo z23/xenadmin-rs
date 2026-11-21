@@ -133,10 +133,12 @@ Not established, and to be said wherever the front end's status is given:
   known.
 - The recovery gate has not been run on a release artifact (there is none), nor by a person, nor
   with the package of `3493640`.
-- Live, still missing: the host's own refusal of an evacuation, and an operation in flight
-  during a toolstack restart. A coordinator handover to the member and back, and maintenance
-  of that coordinator with no resident guest, were run headless on 2026-11-21
-  ([report](reports/2026-11-21-gpui-coordinator.md)).
+- Live, still missing: an operation in flight during a toolstack restart. A coordinator
+  handover to the member and back, and maintenance of that coordinator with no resident
+  guest, were run headless on 2026-11-21
+  ([report](reports/2026-11-21-gpui-coordinator.md)). The host's refusal to evacuate a
+  running diskless VM was run headless the same day
+  ([report](reports/2026-11-21-gpui-evacuation-refusal.md)).
 - The experimental areas were verified on fixtures and by rendering only; their live qualification of
   earlier dates was obtained through the Rune interface or through the core's own lab scenarios.
 
@@ -163,10 +165,12 @@ What remains, and is the operator's:
    repeats in a console.
 2. Whether the criteria met in a virtual machine are accepted as met. The 22 actions that
    stayed outside a command row were moved onto one on 2026-11-21, by the operator's direction.
-3. The live paths still missing (gate G3, criterion 2): the host's own refusal of an
-   evacuation, an operation in flight during a toolstack restart, and a keyring. The
-   coordinator handover and maintenance of the coordinator were run headless on 2026-11-21
-   ([report](reports/2026-11-21-gpui-coordinator.md)).
+3. The live paths still missing (gate G3, criterion 2): an operation in flight during a
+   toolstack restart, and a keyring. The coordinator handover and maintenance of the
+   coordinator were run headless on 2026-11-21
+   ([report](reports/2026-11-21-gpui-coordinator.md)). The host's refusal to evacuate a
+   running diskless VM was run headless the same day
+   ([report](reports/2026-11-21-gpui-evacuation-refusal.md)).
 4. The release, with its version (decision D10), its report and its tag.
 5. Done by the operator's direction of 2026-11-21, carried out with the commit that records it.
    `main` is this tree. The repository description names GPUI Kit where it named Rune UI. Pull

@@ -342,9 +342,13 @@ by a script and nobody at them
   On 2026-11-21 a headless run handed the coordinator to the member and back, then
   entered and left maintenance on that coordinator; it listed no resident guest, so
   nothing was evacuated
-  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). Still not run through the new
-  interface: the host's own refusal of an evacuation, and an operation in flight while
-  the coordinator's toolstack restarts.
+  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). A later headless run the
+  same day opened Enter Maintenance Mode on `h2` while a diskless VM was running
+  there. The host rejected it with `VM_LACKS_FEATURE`, `h2` stayed enabled, and
+  the VM was deleted
+  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). Still not run
+  through the new interface: an operation in flight while the coordinator's
+  toolstack restarts.
 - Found in those runs and not changed
   ([report](docs/reports/2026-11-19-gpui-live-paths.md), findings;
   [report](docs/reports/2026-11-19-gpui-vm-session.md), findings 3 and 4):

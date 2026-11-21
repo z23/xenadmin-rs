@@ -113,6 +113,8 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
   the first of them repeated on the merged tree on 2026-11-20.
   A coordinator handover to the member and back, and maintenance of that coordinator
   with no resident guest, were run headless on 2026-11-21
-  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). The host's own refusal of an
-  evacuation and a saved password in the keyring were not run through it, and the
-  experimental areas were verified on fixtures and by rendering only.
+  ([report](docs/reports/2026-11-21-gpui-coordinator.md)). The host's refusal to
+  evacuate a running diskless VM was run headless the same day
+  ([report](docs/reports/2026-11-21-gpui-evacuation-refusal.md)). A saved password
+  in the keyring was not run through it, and the experimental areas were verified
+  on fixtures and by rendering only.

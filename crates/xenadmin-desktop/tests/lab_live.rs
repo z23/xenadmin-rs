@@ -33,9 +33,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use lab_support::{Client, Evidence, Lab, Outside, Platform};
 use serde_json::json;
 use xenadmin_core::{
-    DiskPlacement, HostId, NetworkId, NicPlacement, OperationId, OperationState, PowerAction,
-    PowerState, SnapshotId, SnapshotName, SrId, VmCommand, VmId, VmMigration, VmSettingEdit,
-    VmSettingsPatch,
+    DiskPlacement, GuestFirmware, HostId, NetworkId, NicPlacement, OperationId, OperationState,
+    PowerAction, PowerState, SnapshotId, SnapshotName, SrId, VmCommand, VmId, VmLifecycleOperation,
+    VmMigration, VmSettingEdit, VmSettingsPatch,
 };
 use xenadmin_desktop::charts;
 use xenadmin_desktop::shell::status;
@@ -5953,4 +5953,340 @@ fn hand_over(client: &mut Client, evidence: &mut Evidence, host: HostId, name: &
         &format!("{tag}: {name} is the coordinator"),
         json!({ "seconds": seconds(took), "coordinator": coordinator_name(client) }),
     );
+}
+
+/// The host's own refusal to evacuate a diskless VM, through Enter
+/// Maintenance Mode. The VM is created, pinned and started by the same
+/// command submit the menus use. The review and the confirmation are the
+/// window's. A VM left by an earlier run of this scenario is removed first.
+#[test]
+#[ignore]
+fn lab_p3_evacuation_refusal() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-evacuation-refusal");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (coordinator, member) = servers(&mut client);
+    for vm in diskless_leftovers(&mut client) {
+        remove_vm(&mut client, vm);
+    }
+    let name = format!("lab-evac-{}", stamp());
+    let vm = create_diskless(&mut client, &name, coordinator.0);
+    pin_and_start(&mut client, vm, member.0);
+    let running = client
+        .wait_for(Duration::from_secs(90), &mut |client| {
+            client.model(|model| {
+                model.inventory.as_ref().is_some_and(|inventory| {
+                    inventory.vms.get(&vm).is_some_and(|guest| {
+                        guest.power_state == PowerState::Running && guest.host == Some(member.0)
+                    })
+                })
+            })
+        })
+        .is_some();
+    let host = client.model(|model| {
+        ObjectRef::host(
+            model.inventory.as_ref().expect("inventory").pool_id,
+            member.0,
+        )
+    });
+    let mut named = false;
+    let mut blocked = None;
+    if running {
+        client.select(&host);
+        client.tab(TabId::General);
+        client.menu(Menu::Server, "server.maintenance");
+        assert_eq!(client.front().as_deref(), Some("host-enter-maintenance"));
+        named = client.describes(&format!("Move guest: {name}"));
+        client.snap(&mut evidence, "enter-maintenance-review");
+        if named {
+            let known = client.model(|model| {
+                model
+                    .resource_rows
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>()
+            });
+            client.press("host-confirm");
+            let _ = client.wait_for(Duration::from_secs(180), &mut |client| {
+                client.model(|model| {
+                    model
+                        .resource_rows
+                        .iter()
+                        .any(|row| !known.contains(&row.id) && row.state.terminal())
+                })
+            });
+            blocked = client.model(|model| {
+                model
+                    .resource_rows
+                    .iter()
+                    .rev()
+                    .find(|row| !known.contains(&row.id) && row.state.terminal())
+                    .map(|row| (format!("{:?}", row.state), row.detail.clone()))
+            });
+        }
+    }
+    let enabled = host_enabled(&mut client, member.0);
+    evidence.step(
+        "host refusal",
+        json!({
+            "name": name,
+            "vm": vm.to_string(),
+            "running_on_member": running,
+            "review_named_the_guest": named,
+            "member_enabled": enabled,
+            "outcome": blocked.as_ref().map(|(state, _)| state),
+            "detail": blocked.as_ref().map(|(_, detail)| detail),
+        }),
+    );
+    if !enabled {
+        client.select(&host);
+        client.menu(Menu::Server, "server.maintenance");
+        if client.front().as_deref() == Some("host-exit-maintenance") {
+            client.press("host-confirm");
+            let _ = client.wait_for(Duration::from_secs(420), &mut |client| {
+                host_enabled(client, member.0)
+            });
+        }
+    }
+    remove_vm(&mut client, vm);
+    let gone = client.model(|model| {
+        model
+            .inventory
+            .as_ref()
+            .is_some_and(|inventory| !inventory.vms.contains_key(&vm))
+    });
+    evidence.step(
+        "delete the VM",
+        json!({ "gone": gone, "member_enabled": host_enabled(&mut client, member.0) }),
+    );
+    let refused = blocked.as_ref().is_some_and(|(state, detail)| {
+        state == "Rejected" && detail.contains("prevent evacuation")
+    });
+    assert!(running, "the diskless VM did not run on the member");
+    assert!(named, "the review did not name the diskless VM");
+    assert!(
+        refused,
+        "the host did not report the evacuation refusal: {blocked:?}"
+    );
+    assert!(enabled, "the member was disabled");
+    assert!(gone, "the diskless VM remained");
+    client.close();
+    evidence.finish();
+}
+
+fn diskless_leftovers(client: &mut Client) -> Vec<VmId> {
+    client.model(|model| {
+        model
+            .inventory
+            .as_ref()
+            .expect("inventory")
+            .vms
+            .values()
+            .filter(|vm| vm.name.starts_with("lab-evac-") && !vm.is_template)
+            .map(|vm| vm.id)
+            .collect()
+    })
+}
+
+fn create_diskless(client: &mut Client, name: &str, coordinator: HostId) -> VmId {
+    let (state, detail, created) = client_command(client, |model| {
+        let (sr, template, network) = {
+            let inventory = model.inventory.as_ref().expect("inventory");
+            let sr = inventory.details.pbds.values().find_map(|pbd| {
+                let sr = pbd.sr?;
+                (pbd.host == Some(coordinator)
+                    && inventory
+                        .details
+                        .storage
+                        .get(&sr)
+                        .and_then(|storage| storage.shared)
+                        == Some(false)
+                    && inventory
+                        .storage
+                        .iter()
+                        .any(|storage| SrId::from(storage.uuid) == sr && storage.kind == "ext"))
+                .then_some(sr)
+            });
+            let template = inventory
+                .vms
+                .values()
+                .find(|vm| vm.is_template && vm.name == "Other install media")
+                .map(|vm| vm.id);
+            let network = inventory.details.pifs.values().find_map(|pif| {
+                (pif.host == Some(coordinator) && pif.management == Some(true))
+                    .then_some(pif.network)
+                    .flatten()
+            });
+            (sr, template, network)
+        };
+        let source = model
+            .connection
+            .as_ref()
+            .expect("connected")
+            .latest()
+            .observe_vm(template.expect("generic template"))
+            .expect("template");
+        VmCommand::Lifecycle {
+            source,
+            operation: VmLifecycleOperation::Create {
+                name: name.to_string(),
+                description: "Disposable diskless VM for the evacuation refusal".to_string(),
+                sr: sr.expect("coordinator local repository"),
+                network: network.expect("management network"),
+                iso: None,
+                vcpus: 1,
+                memory: 512 * 1024 * 1024,
+                disk_size: None,
+                firmware: GuestFirmware::Bios,
+                bios_host: None,
+            },
+        }
+    });
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    let vm = created.expect("created VM");
+    client.wait(
+        "the new VM is in the inventory",
+        Duration::from_secs(60),
+        |client| {
+            client.model(|model| {
+                model
+                    .inventory
+                    .as_ref()
+                    .is_some_and(|inventory| inventory.vms.contains_key(&vm))
+            })
+        },
+    );
+    vm
+}
+
+fn pin_and_start(client: &mut Client, vm: VmId, member: HostId) {
+    let (state, detail, _) = client_command(client, |model| {
+        let previous = {
+            let connection = model.connection.as_ref().expect("connected");
+            connection
+                .latest()
+                .inventory()
+                .expect("inventory")
+                .details
+                .vms[&vm]
+                .affinity
+        };
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::HomeHost {
+            previous,
+            value: Some(member),
+        }])
+        .expect("home server patch");
+        VmCommand::Configure {
+            vm: model
+                .connection
+                .as_ref()
+                .expect("connected")
+                .latest()
+                .observe_vm(vm)
+                .expect("vm"),
+            patch,
+        }
+    });
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    let (state, detail, _) = client_command(client, |model| VmCommand::Power {
+        vm: model
+            .connection
+            .as_ref()
+            .expect("connected")
+            .latest()
+            .observe_vm(vm)
+            .expect("vm"),
+        action: PowerAction::Start,
+    });
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+}
+
+fn client_command(
+    client: &mut Client,
+    build: impl FnOnce(&mut xenadmin_ui::Model) -> VmCommand,
+) -> (OperationState, String, Option<VmId>) {
+    let id = client
+        .update(|model| {
+            let command = build(model);
+            model.submit_tracked_command(command)
+        })
+        .expect("the command was accepted");
+    client.wait(
+        "the operation finishes",
+        Duration::from_secs(300),
+        |client| {
+            client.model(|model| {
+                model
+                    .operation_rows
+                    .iter()
+                    .any(|row| row.id == id && row.state.terminal())
+            })
+        },
+    );
+    client.model(|model| {
+        let row = model
+            .operation_rows
+            .iter()
+            .find(|row| row.id == id)
+            .expect("the operation row");
+        (row.state.clone(), row.detail.clone(), row.created_vm)
+    })
+}
+
+fn remove_vm(client: &mut Client, vm: VmId) {
+    let power = client.model(|model| {
+        model.inventory.as_ref().and_then(|inventory| {
+            inventory
+                .vms
+                .get(&vm)
+                .map(|guest| guest.power_state.clone())
+        })
+    });
+    let Some(power) = power else {
+        return;
+    };
+    if power != PowerState::Halted {
+        let _ = client_command(client, |model| VmCommand::Power {
+            vm: model
+                .connection
+                .as_ref()
+                .expect("connected")
+                .latest()
+                .observe_vm(vm)
+                .expect("vm"),
+            action: PowerAction::HardShutdown,
+        });
+        let _ = client.wait_for(Duration::from_secs(120), &mut |client| {
+            power_state(client, vm) == PowerState::Halted
+        });
+    }
+    if client.model(|model| {
+        model
+            .inventory
+            .as_ref()
+            .is_some_and(|inventory| inventory.vms.contains_key(&vm))
+    }) {
+        let _ = client_command(client, |model| VmCommand::Lifecycle {
+            source: model
+                .connection
+                .as_ref()
+                .expect("connected")
+                .latest()
+                .observe_vm(vm)
+                .expect("vm"),
+            operation: VmLifecycleOperation::Delete {
+                expected_template: false,
+                disks: Vec::new(),
+                snapshots: Vec::new(),
+            },
+        });
+        let _ = client.wait_for(Duration::from_secs(180), &mut |client| {
+            client.model(|model| {
+                model
+                    .inventory
+                    .as_ref()
+                    .is_some_and(|inventory| !inventory.vms.contains_key(&vm))
+            })
+        });
+    }
 }

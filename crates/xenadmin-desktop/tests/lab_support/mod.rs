@@ -544,6 +544,25 @@ impl Client {
         self.cx.update(|cx| read(store.read(cx).model()))
     }
 
+    /// Change the model the way a command does, and run the intents that
+    /// change produces. The closure's value comes back after the run.
+    pub fn update<R>(&mut self, change: impl FnOnce(&mut Model) -> R) -> R {
+        let store = self.store.clone();
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let write = slot.clone();
+        self.cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.run(
+                    |model| {
+                        *write.borrow_mut() = Some(change(model));
+                    },
+                    cx,
+                );
+            });
+        });
+        slot.borrow_mut().take().expect("the model ran")
+    }
+
     /// The id of the surface in front: a dialog of the model or the shell's
     /// typed-path dialog.
     pub fn front(&mut self) -> Option<String> {
@@ -900,11 +919,7 @@ impl Client {
                 {
                     return;
                 }
-                window.scroll(
-                    menu,
-                    ScrollDelta::Pixels(point(px(0.), px(-160.))),
-                    cx,
-                );
+                window.scroll(menu, ScrollDelta::Pixels(point(px(0.), px(-160.))), cx);
                 window.render_frame(cx);
             }
         });
