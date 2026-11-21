@@ -8,7 +8,7 @@ authority on what is implemented and what is qualified.
 0.18.0 is the first published version. Versions up to 0.17.0 were local development
 checkpoints.
 
-## 0.20.0 (in development)
+## 0.20.0 (2026-11-21)
 
 Stored formats: operation journal 5, connection profiles 3. The journal format changes
 from 4. This version marks a journal as format 5 the first time it opens it. 0.19.0 then
