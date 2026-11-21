@@ -22,8 +22,8 @@
 //! `snapshot-operation-recheck-<id>` and `snapshot-show-created-<id>`.
 
 use xenadmin_core::{
-    Inventory, OperationAction, OperationRecord, OperationState, PoolId, PowerState, Snapshot,
-    SnapshotAncestryRow, SnapshotOperation, VmId,
+    Inventory, OperationRecord, OperationState, PoolId, PowerState, Snapshot, SnapshotAncestryRow,
+    VmId,
 };
 
 use super::edit::{self, Dialog, ReviewedDisk, SnapshotReview};
@@ -168,51 +168,24 @@ fn outcome_state(record: &OperationRecord) -> OutcomeState {
 }
 
 /// The two newest operations of this VM, as the Rune page listed them under
-/// the table, with the controls of a snapshot workflow. A recheck and a
-/// stop are control messages on the existing operation; neither replays a
-/// write.
-fn outcomes(m: &Model, inventory: &Inventory, pool: PoolId, vm: VmId) -> Vec<Block> {
-    let blocked = if m.is_synthetic_pool(pool) {
-        Some(edit::DEMO)
-    } else if !edit::current(m, pool) {
-        Some(edit::not_writable(m, pool))
-    } else {
-        None
-    };
+/// the table. Stopping or rechecking a snapshot workflow is a command of
+/// the tab's row; it acts on the newest shown workflow that offers it.
+pub(crate) fn shown(m: &Model, pool: PoolId, vm: VmId) -> Vec<&OperationRecord> {
     m.operation_rows
         .iter()
         .rev()
         .filter(|record| record.vm == vm && record.pool == pool)
         .take(2)
+        .collect()
+}
+
+fn outcomes(m: &Model, inventory: &Inventory, pool: PoolId, vm: VmId) -> Vec<Block> {
+    shown(m, pool, vm)
+        .into_iter()
         .map(|record| {
             let id = record.id;
             let mut lines = vec![record.detail.clone()];
             let mut controls = Vec::new();
-            if matches!(
-                &record.action,
-                OperationAction::Snapshot(SnapshotOperation::Workflow { .. })
-            ) {
-                if record.can_cancel && !record.cancel_requested && !record.state.terminal() {
-                    controls.push(
-                        button(
-                            format!("snapshot-operation-cancel-{id}"),
-                            "Stop remaining steps",
-                            move |m| crate::areas::power::request_cancellation(m, id),
-                        )
-                        .disabled_opt(blocked),
-                    );
-                }
-                if record.can_recheck() && record.state == OperationState::OutcomeUnknown {
-                    controls.push(
-                        button(
-                            format!("snapshot-operation-recheck-{id}"),
-                            "Recheck snapshot outcome",
-                            move |m| crate::areas::power::recheck(m, id),
-                        )
-                        .disabled_opt(blocked),
-                    );
-                }
-            }
             if let Some(id) = record.created_snapshot {
                 lines.push(format!("Created snapshot UUID: {id}"));
             }

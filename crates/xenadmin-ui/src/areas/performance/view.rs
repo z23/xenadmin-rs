@@ -245,21 +245,12 @@ fn saved_presets(m: &Model, view: &MetricsUi) -> Vec<Block> {
         .filter(|preset| preset.kind == kind)
         .flat_map(|preset| {
             let name = preset.name.clone();
-            let remove_name = name.clone();
             blocks![
-                actions([
-                    button(
-                        format!("metric-preset-{}", preset.name),
-                        &preset.name,
-                        move |m| presets::apply(m, &name)
-                    ),
-                    button(
-                        format!("metric-preset-remove-{}", preset.name),
-                        "Remove",
-                        move |m| presets::remove(m, &remove_name)
-                    )
-                    .danger(),
-                ]),
+                actions([button(
+                    format!("metric-preset-{}", preset.name),
+                    &preset.name,
+                    move |m| presets::apply(m, &name)
+                )]),
                 caption(format!(
                     "{} · {}",
                     preset.options.window.label(),
@@ -289,11 +280,6 @@ fn saved_presets(m: &Model, view: &MetricsUi) -> Vec<Block> {
         )
         .placeholder("Preset name")
         .on_submit(presets::save),
-        actions([button(
-            "metric-preset-save",
-            "Save current graph",
-            presets::save
-        )]),
         rows,
         actions([button("metric-presets-close", "Back to graphs", presets::toggle).outline()]),
     ]

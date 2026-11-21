@@ -86,6 +86,11 @@ fn commands() -> Vec<CommandSpec> {
             .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_connect)
             .invoke(home::connect),
+        CommandSpec::new("server.view-pool", "View pool", AREA)
+            .local(TabId::Home, 25)
+            .local_scopes(&[ObjectKind::None])
+            .eligibility(home::can_view_pool)
+            .invoke(home::view_pool),
         CommandSpec::new("server.cancel-connect", "Cancel connection attempt", AREA)
             .context(SAVED)
             .local(TabId::Home, 30)

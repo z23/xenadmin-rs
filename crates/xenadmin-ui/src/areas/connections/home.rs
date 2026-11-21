@@ -99,6 +99,25 @@ pub fn connect(m: &mut Model, target: &Target) {
     }
 }
 
+/// Shows the pool of a connected saved connection. This is what a double
+/// click on its row used to do.
+pub fn can_view_pool(m: &Model, target: &Target) -> Eligibility {
+    let Some(id) = profile_of(m, target) else {
+        return Eligibility::Hidden;
+    };
+    if m.workspace.live(id) || synthetic(m, id) {
+        Eligibility::Enabled
+    } else {
+        Eligibility::Hidden
+    }
+}
+
+pub fn view_pool(m: &mut Model, target: &Target) {
+    if let Some(id) = profile_of(m, target) {
+        session::select(m, id);
+    }
+}
+
 pub fn can_cancel_connect(m: &Model, target: &Target) -> Eligibility {
     match profiles_of(m, target) {
         Some(ids) if ids.iter().any(|id| m.workspace.loads.contains_key(id)) => {
@@ -280,20 +299,6 @@ fn select_row(m: &mut Model, row: &str) {
     }
 }
 
-/// A double click or Enter on a row: the first action the Rune card of the
-/// connection offered. "View pool" for a live session, nothing while an
-/// attempt waits, otherwise "Connect / edit".
-fn activate_row(m: &mut Model, row: &str) {
-    let Some(id) = row_profile(m, row) else {
-        return;
-    };
-    if m.workspace.live(id) || synthetic(m, id) {
-        session::select(m, id);
-    } else if !m.workspace.loads.contains_key(&id) {
-        session::edit(m, id);
-    }
-}
-
 fn rows(m: &Model) -> Vec<Row> {
     session::sessions(m)
         .into_iter()
@@ -442,7 +447,6 @@ pub fn tab(m: &Model, tab: TabId, scope: &Target) -> Option<TabBody> {
             rows,
         )
         .single(selected_row.as_deref(), select_row)
-        .on_activate(activate_row)
         .row_menu([
             CommandId("server.connect"),
             CommandId("server.cancel-connect"),

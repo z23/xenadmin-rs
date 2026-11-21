@@ -46,6 +46,7 @@ pub const NIC_RATE: CommandId = CommandId("vm.nic.rate-limit");
 pub const NIC_ACTIVATE: CommandId = CommandId("vm.nic.activate");
 pub const NIC_DEACTIVATE: CommandId = CommandId("vm.nic.deactivate");
 pub const NIC_REMOVE: CommandId = CommandId("vm.nic.remove");
+pub const RECHECK: CommandId = CommandId("vm.device.recheck");
 
 /// The menu of a row of a VM's Storage tab.
 pub const DISK_ROW_MENU: [CommandId; 10] = [
@@ -208,7 +209,33 @@ pub fn commands() -> Vec<CommandSpec> {
                     lifecycle::open(m, c.pool, c.vm, Kind::Fixed(operation));
                 }
             }),
+        CommandSpec::new(RECHECK.0, "Recheck outcome", area)
+            .local(TabId::Storage, 100)
+            .local(TabId::Networking, 100)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(can_recheck_device)
+            .invoke(|m, target| {
+                if let Some(c) = subject(m, target)
+                    && let Some(id) = super::tabs::recheckable(m, c.pool, c.vm)
+                {
+                    m.control_operation_for(
+                        c.pool,
+                        id,
+                        xenadmin_core::OperationControl::Recheck,
+                    );
+                }
+            }),
     ]
+}
+
+fn can_recheck_device(m: &Model, target: &Target) -> Eligibility {
+    let Some(c) = subject(m, target) else {
+        return Eligibility::Hidden;
+    };
+    if super::tabs::recheckable(m, c.pool, c.vm).is_none() {
+        return Eligibility::Hidden;
+    }
+    Eligibility::enabled_if(m.can_mutate_pool(c.pool), actions::RECONNECT)
 }
 
 /// The VM a command acts on, with the inventory of its pool.

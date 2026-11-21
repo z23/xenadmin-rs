@@ -45,6 +45,7 @@ pub const SEND_CTRL_C: CommandId = CommandId("console.send-ctrl-c");
 pub const SEND_CTRL_D: CommandId = CommandId("console.send-ctrl-d");
 pub const SEND_CLIPBOARD: CommandId = CommandId("console.send-clipboard");
 pub const TYPE_CLIPBOARD: CommandId = CommandId("console.type-clipboard");
+pub const CONFIRM_TYPING: CommandId = CommandId("console.confirm-typing");
 pub const COPY_CLIPBOARD: CommandId = CommandId("console.copy-remote-clipboard");
 pub const CLOSE: CommandId = CommandId("console.close");
 pub const CLOSE_ALL_WINDOWS: CommandId = CommandId("window.console.close-all");
@@ -453,6 +454,109 @@ fn window_label<const SLOT: u32>(m: &Model, _: &Target) -> Option<String> {
     windows::session(m, ConsoleWindowId(SLOT)).map(|s| s.target.heading())
 }
 
+fn can_confirm_typing(m: &Model, target: &Target) -> Eligibility {
+    if !shows(m, target) {
+        return Eligibility::Hidden;
+    }
+    let Some(session) = session(m, Seat::Tab) else {
+        return Eligibility::Hidden;
+    };
+    if session.review().is_none() {
+        return Eligibility::Hidden;
+    }
+    Eligibility::enabled_unless(session.not_ready_reason())
+}
+
+/// The action controls of a detached window, in the order of its command row.
+pub const WINDOW_ROW: [Control; 7] = [
+    Control::CtrlAltDelete,
+    Control::AltTab,
+    Control::CtrlAltF1,
+    Control::Reconnect,
+    Control::SaveScreenshot,
+    Control::SendClipboard,
+    Control::TypeClipboard,
+];
+
+pub fn command_of(control: Control) -> Option<CommandId> {
+    Some(match control {
+        Control::Reconnect => RECONNECT,
+        Control::SaveScreenshot => SAVE_SCREENSHOT,
+        Control::CtrlAltDelete => SEND_CTRL_ALT_DEL,
+        Control::CtrlAltF1 => SEND_CTRL_ALT_F1,
+        Control::AltTab => SEND_ALT_TAB,
+        Control::SendClipboard => SEND_CLIPBOARD,
+        Control::TypeClipboard => TYPE_CLIPBOARD,
+        _ => return None,
+    })
+}
+
+/// The command row of a detached window. The same commands as the Console
+/// tab, run against this window's console rather than the main selection.
+pub fn window_row(m: &Model, id: crate::intent::ConsoleWindowId) -> Vec<crate::command::MenuItem> {
+    let seat = Seat::Window(id);
+    let Some(session) = session(m, seat) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    for control in WINDOW_ROW {
+        let Some(command) = command_of(control) else {
+            continue;
+        };
+        let item = match control_state(m, seat, control) {
+            Eligibility::Hidden => continue,
+            Eligibility::Enabled => crate::command::MenuItem {
+                id: command,
+                label: control.label(session.actual_size, session.target.side()),
+                shortcut: None,
+                disabled: None,
+                checked: None,
+            },
+            Eligibility::Disabled(reason) => crate::command::MenuItem {
+                id: command,
+                label: control.label(session.actual_size, session.target.side()),
+                shortcut: None,
+                disabled: Some(reason),
+                checked: None,
+            },
+        };
+        items.push(item);
+    }
+    if session.review().is_some() {
+        let disabled = session.not_ready_reason();
+        items.push(crate::command::MenuItem {
+            id: CONFIRM_TYPING,
+            label: "Type it".into(),
+            shortcut: None,
+            disabled,
+            checked: None,
+        });
+    }
+    items
+}
+
+pub fn press_window(m: &mut Model, id: crate::intent::ConsoleWindowId, command: CommandId) {
+    let seat = Seat::Window(id);
+    if command == CONFIRM_TYPING {
+        if let Some(session) = session_mut(m, seat)
+            && session.review().is_some()
+            && session.not_ready_reason().is_none()
+        {
+            session.confirm_typing();
+        }
+        return;
+    }
+    let Some(control) = WINDOW_ROW
+        .into_iter()
+        .find(|control| command_of(*control) == Some(command))
+    else {
+        return;
+    };
+    if matches!(control_state(m, seat, control), Eligibility::Enabled) {
+        run(m, seat, control);
+    }
+}
+
 fn tab_side(m: &Model) -> Option<&'static str> {
     m.areas.console.tab.as_ref().map(|s| s.target.side())
 }
@@ -545,6 +649,17 @@ pub fn commands() -> Vec<CommandSpec> {
             140,
             Control::TypeClipboard
         ),
+        CommandSpec::new(CONFIRM_TYPING.0, "Type it", AREA)
+            .local(TabId::Console, 145)
+            .local_scopes(&[ObjectKind::Host, ObjectKind::Vm])
+            .eligibility(can_confirm_typing)
+            .invoke(|m, target| {
+                if shows(m, target)
+                    && let Some(session) = session_mut(m, Seat::Tab)
+                {
+                    session.confirm_typing();
+                }
+            }),
         tab_command!(
             COPY_CLIPBOARD,
             "Copy VM Clipboard",

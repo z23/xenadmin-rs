@@ -451,13 +451,6 @@ pub fn section(m: &Model, i: &Inventory, pool: PoolId, vm: VmId, snapshot: &Snap
     let picture = panel.and_then(|p| p.image.clone()).map(|data| {
         image("snapshot-preview-image", "Saved snapshot preview", data).max_size(640, 360)
     });
-    let load = button("snapshot-preview-load", "Load saved preview", request)
-        .disabled_if(synthetic, SYNTHETIC)
-        .disabled_opt(
-            panel
-                .filter(|p| p.pending())
-                .map(|p| p.message.clone()),
-        );
     // What is known of the snapshot, and beside it (under it when narrow)
     // its saved preview.
     let known: Vec<Block> = blocks![
@@ -526,7 +519,6 @@ pub fn section(m: &Model, i: &Inventory, pool: PoolId, vm: VmId, snapshot: &Snap
         heading("Saved preview"),
         caption(message).key("snapshot-preview-message"),
         picture,
-        actions([load]),
     ];
     group("Snapshot information", vec![columns([known, preview])])
         .key("snapshot-information")

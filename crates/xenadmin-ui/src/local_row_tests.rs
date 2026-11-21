@@ -310,7 +310,7 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
         "events.acknowledge", "events.request-cancel", "events.export",
     ]),
     (T::Home, K::None, &[
-        "server.add", "probe.open", "server.connect", "probe.both", "server.cancel-connect",
+        "server.add", "probe.open", "server.connect", "probe.both", "server.view-pool", "server.cancel-connect",
         "server.disconnect", "server.reconnect-as", "server.review-certificate",
         "server.remove-connection", "server.connect-all", "server.disconnect-all",
     ]),
@@ -366,16 +366,19 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     (T::Console, K::Host, &[
         "server.console", "console.reconnect", "console.actual-size", "console.fullscreen",
         "console.undock", "console.release-input", "console.save-screenshot",
-        "console.send-ctrl-alt-f1", "console.send-alt-tab", "console.send-ctrl-c",
+        "console.send-ctrl-alt-f1", "console.send-alt-tab",         "console.send-ctrl-c",
         "console.send-ctrl-d", "console.send-clipboard", "console.type-clipboard",
-        "console.copy-remote-clipboard", "console.close",
+        "console.confirm-typing", "console.copy-remote-clipboard", "console.close",
     ]),
     (T::Performance, K::Host, &[
-        "performance.data-sources", "performance.presets", "performance.reconnect",
+        "performance.data-sources", "performance.presets", "performance.preset-save",
+        "performance.preset-remove", "performance.reconnect",
         "server.monitoring-recording",
     ]),
     (T::General, K::Vm, &[
-        "vm.check-availability", "vm.properties",
+        "vm.check-availability", "operation.request-cancel", "operation.recheck",
+        "operation.review-unknown", "operation.review-cancellation", "operation.explain",
+        "vm.properties",
     ]),
     (T::Memory, K::Vm, &[
         "vm.memory-settings",
@@ -384,26 +387,29 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
         "vm.disk.new", "vm.disk.attach", "vm.cd.add", "vm.disk.detach", "vm.disk.activate",
         "vm.disk.deactivate", "vm.cd.insert", "vm.cd.eject", "vm.disk.properties",
         "vm.disk.delete", "vm.cloud-init-drive", "disk.grow", "disk.copy", "disk.cleanup",
-        "vm.install-guest-tools",
+        "vm.install-guest-tools", "vm.device.recheck",
     ]),
     (T::Networking, K::Vm, &[
         "vm.nic.add", "vm.nic.properties", "vm.nic.rate-limit", "vm.nic.activate",
-        "vm.nic.deactivate", "vm.nic.remove",
+        "vm.nic.deactivate", "vm.nic.remove", "vm.device.recheck",
     ]),
     (T::Console, K::Vm, &[
         "vm.console", "console.reconnect", "console.actual-size", "console.fullscreen",
         "console.undock", "console.release-input", "console.save-screenshot",
         "vm.send-ctrl-alt-del", "console.send-ctrl-alt-f1", "console.send-alt-tab",
-        "console.send-ctrl-c", "console.send-ctrl-d", "console.send-clipboard",
-        "console.type-clipboard", "console.copy-remote-clipboard", "console.close",
+        "console.send-ctrl-c", "console.send-ctrl-d",         "console.send-clipboard",
+        "console.type-clipboard", "console.confirm-typing",
+        "console.copy-remote-clipboard", "console.close",
         "vm.connect-external",
     ]),
     (T::Performance, K::Vm, &[
-        "performance.data-sources", "performance.presets", "performance.reconnect",
+        "performance.data-sources", "performance.presets", "performance.preset-save",
+        "performance.preset-remove", "performance.reconnect",
     ]),
     (T::Snapshots, K::Vm, &[
         "vm.snapshot", "snapshot.revert", "snapshot.properties", "snapshot.new-vm",
-        "snapshot.new-template", "snapshot.export", "snapshot.delete",
+        "snapshot.new-template", "snapshot.stop-workflow", "snapshot.export",
+        "snapshot.recheck-outcome", "snapshot.load-preview", "snapshot.delete",
     ]),
     (T::General, K::Template, &[
         "template.properties",

@@ -1,10 +1,12 @@
 //! What the console shows: the body of the Console tab, and the content of
 //! a detached window.
 //!
-//! Both are the same blocks from one function ([`body`]). The difference is
-//! the controls: the tab has them as commands on its local action row
-//! ([`super::commands`]); a window has no command table, so its body
-//! carries them as buttons, in the three rows of the Rune toolbar.
+//! Both are the same blocks from one function ([`body`]). The tab and a
+//! detached window offer the actions as commands: the tab on its local
+//! action row, the window on its own row ([`super::commands::window_row`]).
+//! A window's row runs them against that window. Fit, fullscreen, release,
+//! a host console's own chords and the automatic reconnect stay controls
+//! of the body.
 //!
 //! Keys. Rune keys kept: `console-canvas`, `console-auto-reconnect`,
 //! `console-typing-review`, `confirm-console-typing`,
@@ -150,20 +152,11 @@ fn typing_review(seat: Seat, s: &Session) -> Option<Group> {
             "Type clipboard text as keys",
             blocks![
                 caption(typing_prompt(review, &s.target.name)).key(TYPING_PROMPT),
-                actions([
-                    button(CONFIRM_TYPING, "Type it", move |m| {
-                        if let Some(s) = session_mut(m, seat) {
-                            s.confirm_typing();
-                        }
-                    })
-                    .primary()
-                    .disabled_opt(s.not_ready_reason()),
-                    button(CANCEL_TYPING, "Cancel", move |m| {
-                        if let Some(s) = session_mut(m, seat) {
-                            s.typed = None;
-                        }
-                    }),
-                ]),
+                actions([button(CANCEL_TYPING, "Cancel", move |m| {
+                    if let Some(s) = session_mut(m, seat) {
+                        s.typed = None;
+                    }
+                })]),
             ],
         )
         .key(TYPING_REVIEW),
@@ -200,6 +193,7 @@ fn body(m: &Model, seat: Seat, s: &Session) -> Vec<Block> {
         for row in Control::ROWS {
             let buttons: Vec<Button> = row
                 .iter()
+                .filter(|control| !commands::WINDOW_ROW.contains(control))
                 .filter_map(|control| control_button(m, seat, s, *control))
                 .collect();
             if !buttons.is_empty() {

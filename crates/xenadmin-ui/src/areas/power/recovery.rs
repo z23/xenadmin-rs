@@ -358,7 +358,7 @@ fn guest_of(m: &Model, record: &OperationRecord) -> Option<Guest> {
 }
 
 /// Whether Rune offered "Review cancellation request…" for a record.
-fn offers_cancellation(record: &OperationRecord) -> bool {
+pub(crate) fn offers_cancellation(record: &OperationRecord) -> bool {
     !record.state.terminal()
         && record.can_cancel
         && !record.cancel_requested

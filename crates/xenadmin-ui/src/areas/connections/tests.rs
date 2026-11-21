@@ -1078,6 +1078,7 @@ fn the_commands_are_those_of_the_plans_menus_and_of_the_rune_connection_cards() 
         [
             ("server.add", "Add Server…", Some(place::SERVER_ADD)),
             ("server.connect", "Connect…", Some(place::SERVER_CONNECT)),
+            ("server.view-pool", "View pool", None),
             ("server.cancel-connect", "Cancel connection attempt", None),
             (
                 "server.disconnect",
@@ -1303,9 +1304,10 @@ fn activating_a_row_opens_its_editor_and_a_waiting_attempt_offers_only_cancel() 
     let mut fixture = Fixture::new();
     let kept = save_profile(&mut fixture.model, "Keyring fixture", true, false);
     let mut h = home(&mut fixture);
-    // Double click or Enter: "Connect / edit", which loads the saved
-    // password for the editor.
-    h.activate_row(TABLE, &kept.id.to_string());
+    // "Connect…" loads the saved password for the editor. A double click
+    // used to do this; the command on the row does it now.
+    h.select_row(TABLE, &kept.id.to_string());
+    h.click("server.connect");
     assert_eq!(h.surface().id, connect::DIALOG);
     assert_eq!(h.model.workspace.editing, Some(kept.id));
     assert_eq!(h.node("remember-password").checked, Some(true));
@@ -1354,8 +1356,8 @@ fn activating_a_row_opens_its_editor_and_a_waiting_attempt_offers_only_cancel() 
             "server.disconnect-all"
         ]
     );
-    h.activate_row(TABLE, &waiting.id.to_string());
-    assert_eq!(h.surface_id(), None, "activation does nothing meanwhile");
+    assert_eq!(h.eligibility("server.connect"), Eligibility::Hidden);
+    assert_eq!(h.eligibility("server.view-pool"), Eligibility::Hidden);
     h.click("server.cancel-connect");
     assert!(h.model.workspace.loads.is_empty());
     assert!(h.has_text("Connection attempt cancelled."));
@@ -1379,11 +1381,11 @@ fn the_demo_pool_is_a_session_the_commands_explain_but_cannot_change() {
         h.eligibility("server.remove-connection"),
         Eligibility::disabled(DEMO)
     );
-    // On the Home tab the demo's connection is listed, and activating its
-    // row shows the pool.
+    // On the Home tab the demo's connection is listed, and View pool shows it.
     h.model.show_home();
     assert!(h.has_text("Demo"));
     let id = h.model.workspace.selected.unwrap().to_string();
-    h.activate_row(TABLE, &id);
+    h.select_row(TABLE, &id);
+    h.click("server.view-pool");
     assert_eq!(h.model.scope(), &pool);
 }

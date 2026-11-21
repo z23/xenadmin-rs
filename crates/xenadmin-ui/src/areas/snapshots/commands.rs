@@ -14,7 +14,10 @@
 //! [`RESTORE_REFUSED`] follows the clone caption, and a VM the inventory no
 //! longer has gives `Error::Stale`).
 
-use xenadmin_core::{Error, PoolId, PowerAction, PowerState, SnapshotAction, VmId};
+use xenadmin_core::{
+    Error, OperationAction, OperationRecord, OperationState, PoolId, PowerAction, PowerState,
+    SnapshotAction, SnapshotOperation, VmId,
+};
 
 use super::{edit, shown_vm};
 use crate::prelude::*;
@@ -25,6 +28,9 @@ pub const PROPERTIES: CommandId = CommandId("snapshot.properties");
 pub const NEW_VM: CommandId = CommandId("snapshot.new-vm");
 pub const NEW_TEMPLATE: CommandId = CommandId("snapshot.new-template");
 pub const DELETE: CommandId = CommandId("snapshot.delete");
+pub const STOP_WORKFLOW: CommandId = CommandId("snapshot.stop-workflow");
+pub const RECHECK_OUTCOME: CommandId = CommandId("snapshot.recheck-outcome");
+pub const LOAD_PREVIEW: CommandId = CommandId("snapshot.load-preview");
 
 /// The export of the selected snapshots: `bulk_export`'s command. The tab's
 /// button to it follows the command's eligibility.
@@ -95,7 +101,106 @@ pub fn commands() -> Vec<CommandSpec> {
             .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::Delete))
             .invoke(|m, _| edit::begin_delete(m)),
+        CommandSpec::new(STOP_WORKFLOW.0, "Stop remaining steps", "snapshots")
+            .local(TabId::Snapshots, 60)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| workflow(m, target, offers_stop))
+            .invoke(|m, target| {
+                if let Some(record) = workflow_record(m, target, offers_stop) {
+                    crate::areas::power::request_cancellation(m, record.id);
+                }
+            }),
+        CommandSpec::new(RECHECK_OUTCOME.0, "Recheck snapshot outcome", "snapshots")
+            .local(TabId::Snapshots, 70)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| workflow(m, target, offers_recheck))
+            .invoke(|m, target| {
+                if let Some(record) = workflow_record(m, target, offers_recheck) {
+                    crate::areas::power::recheck(m, record.id);
+                }
+            }),
+        CommandSpec::new(LOAD_PREVIEW.0, "Load saved preview", "snapshots")
+            .local(TabId::Snapshots, 80)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(can_load_preview)
+            .invoke(|m, target| {
+                if matches!(can_load_preview(m, target), Eligibility::Enabled) {
+                    super::inspection::request(m);
+                }
+            }),
     ]
+}
+
+fn is_workflow(record: &OperationRecord) -> bool {
+    matches!(
+        record.action,
+        OperationAction::Snapshot(SnapshotOperation::Workflow { .. })
+    )
+}
+
+fn offers_stop(record: &OperationRecord) -> bool {
+    is_workflow(record) && record.can_cancel && !record.cancel_requested && !record.state.terminal()
+}
+
+fn offers_recheck(record: &OperationRecord) -> bool {
+    is_workflow(record)
+        && record.can_recheck()
+        && record.state == OperationState::OutcomeUnknown
+}
+
+fn workflow_record<'a>(
+    m: &'a Model,
+    target: &Target,
+    offers: fn(&OperationRecord) -> bool,
+) -> Option<&'a OperationRecord> {
+    let (pool, vm) = subject(m, target)?;
+    super::view::shown(m, pool, vm)
+        .into_iter()
+        .find(|record| offers(record))
+}
+
+fn workflow(
+    m: &Model,
+    target: &Target,
+    offers: fn(&OperationRecord) -> bool,
+) -> Eligibility {
+    let Some((pool, _)) = subject(m, target) else {
+        return Eligibility::Hidden;
+    };
+    if !m.is_synthetic_pool(pool) && !edit::current(m, pool) {
+        return Eligibility::disabled(edit::not_writable(m, pool));
+    }
+    if m.is_synthetic_pool(pool) {
+        return if workflow_record(m, target, offers).is_some() {
+            Eligibility::disabled(edit::DEMO)
+        } else {
+            Eligibility::Hidden
+        };
+    }
+    if workflow_record(m, target, offers).is_some() {
+        Eligibility::Enabled
+    } else {
+        Eligibility::Hidden
+    }
+}
+
+fn can_load_preview(m: &Model, target: &Target) -> Eligibility {
+    let Some((pool, _)) = subject(m, target) else {
+        return Eligibility::Hidden;
+    };
+    if !m.is_synthetic_pool(pool) && !edit::current(m, pool) {
+        return Eligibility::disabled(edit::not_writable(m, pool));
+    }
+    if m.is_synthetic_pool(pool) {
+        return Eligibility::disabled(super::inspection::SYNTHETIC);
+    }
+    if edit::selected_snapshot(m).is_none() {
+        return Eligibility::disabled(NONE_SELECTED);
+    }
+    if let Some(panel) = super::inspection::panel(m).filter(|panel| panel.pending()) {
+        return Eligibility::disabled(panel.message.clone());
+    }
+    Eligibility::Enabled
 }
 
 /// The VM a command of this area acts on: the one VM of the target, or,

@@ -25,7 +25,8 @@ Done:
 - The port. All 29 areas of the Rune front end are in the toolkit-free model `crates/xenadmin-ui`;
   the GPUI Kit front end is `crates/xenadmin-desktop` (it was `crates/xenadmin-gpui`) and builds the
   client `xenadmin-rs` and the scene tool `xenadmin-scenes`; the Rune crate and its dependencies are
-  removed. 238 commands; 129 of the 129 scenes; each of the 371 tests of the old front end has its
+  removed. 251 commands (238 at the cutover, and 13 added on 2026-11-21 when the actions
+  that had stayed outside a command row were moved onto one); 129 of the 129 scenes; each of the 371 tests of the old front end has its
   disposition in the ledger (154 moved, 119 ported, 94 split, 4 retired, none open).
 - Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
   Kit's headless test platform, and a render of every scene by `./scripts/check.sh`
@@ -145,7 +146,7 @@ operator may hold that a person's run is needed and say so.
 | --- | --- | --- |
 | G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted. The session in a virtual machine added to several of those limits; none is closed for a real seat | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
-| G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer); 5 partly: the review is made as a test, and it finds 22 actions outside a row of commands, recorded with their reasons | [G2](reports/2026-11-19-gpui-gate-g2.md) |
+| G2 | Not passed. Criteria 1 to 4 met (1 in a virtual machine with injected input and a software renderer). Criterion 5: on 2026-11-21 the 22 actions were moved onto command rows, and the review finds none outside the allowed places in the states it shows; it does not show every state | [G2](reports/2026-11-19-gpui-gate-g2.md) |
 | G3 | Not passed. Criteria 1 (the recovery gate with the CI AppImage of `e808a2f`) and 3 (a driven session) met in a virtual machine with injected input and a software renderer; 4 met; 2 partly met, headless, with a few paths missing; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
 | G5 | Not passed. Criteria 1 (`./scripts/check.sh` passes, no `rune` crate) and 3 (CI built the archive and the AppImage with their notices, at `e808a2f` and again at `3493640`) met; 2 partly: the recovery gate was repeated with a CI package in a virtual machine, and there is no release artifact | [G5](reports/2026-11-19-gpui-gate-g5.md) |
@@ -158,8 +159,8 @@ What remains, and is the operator's:
    names none of these. The findings of the runs in virtual machines that need a decision are
    listed in their reports; of 2026-11-20, the pointer press that does nothing while a key
    repeats in a console.
-2. The word on the 22 actions that stay outside a row of commands (gate G2, criterion 5), and on
-   whether the criteria met in a virtual machine are accepted as met.
+2. Whether the criteria met in a virtual machine are accepted as met. The 22 actions that
+   stayed outside a command row were moved onto one on 2026-11-21, by the operator's direction.
 3. The live paths still missing (gate G3, criterion 2), which need rules for the lab that allow a
    coordinator handover, and a keyring.
 4. The release, with its version (decision D10), its report and its tag.

@@ -97,38 +97,6 @@ const fn view(place: &'static str, key: &'static str, what: &'static str) -> Rev
     }
 }
 
-const fn action(
-    place: &'static str,
-    key: &'static str,
-    what: &'static str,
-    stays: &'static str,
-) -> Reviewed {
-    Reviewed {
-        place,
-        key,
-        class: Action,
-        what,
-        stays,
-    }
-}
-
-/// Why a button of the detached console window is not a command.
-const WINDOW: &str = "The detached console window has no menu bar, toolbar or row of commands, and a command \
-    acts on the selection of the main window, while this acts on the console of its own \
-    window. In the main window the same control is a command of the Console tab's row.";
-
-/// Why a control under an operation record is not a command.
-const RECORD: &str = "Not moved, by choice. Its target is one operation record, shown as a line of the tab. \
-    The plan lets a command of a tab's row act on the selection of a grid; the records are \
-    lines without a selection and were not made a grid in this port, so the control stays \
-    the record's own.";
-
-/// Why the two buttons of the saved graph presets are not commands.
-const PRESET: &str = "Not moved, by choice. It acts on the preset named in the field beside it or on the \
-    preset of its own row, inside the body that replaces the graphs (opened by the command \
-    performance.presets); the presets were left inside the tab. It writes only the \
-    client's own preferences.";
-
 /// The review. Keep it sorted by place; within a place a narrower key
 /// comes before the wider one that would also match.
 const REVIEWED: &[Reviewed] = &[
@@ -149,28 +117,10 @@ const REVIEWED: &[Reviewed] = &[
         "console-actual-size",
         "draws the console at its own size instead of fitted to the window",
     ),
-    action(
-        "console-window",
-        "console-alt-tab",
-        "sends Alt+Tab to the guest",
-        WINDOW,
-    ),
     view(
         "console-window",
         "console-auto-reconnect",
         "whether this console view connects again by itself when its connection ends",
-    ),
-    action(
-        "console-window",
-        "console-ctrl-alt-delete",
-        "sends Ctrl+Alt+Delete to the guest",
-        WINDOW,
-    ),
-    action(
-        "console-window",
-        "console-ctrl-alt-f1",
-        "sends Ctrl+Alt+F1 to the guest",
-        WINDOW,
     ),
     view(
         "console-window",
@@ -186,30 +136,6 @@ const REVIEWED: &[Reviewed] = &[
         "console-window",
         "copy-console-clipboard",
         "copies the text the guest offered to the local clipboard",
-    ),
-    action(
-        "console-window",
-        "reconnect-console",
-        "opens the console connection again",
-        WINDOW,
-    ),
-    action(
-        "console-window",
-        "save-console-screenshot",
-        "asks for a file and writes the console picture to it",
-        WINDOW,
-    ),
-    action(
-        "console-window",
-        "send-console-clipboard",
-        "sends the local clipboard text to the guest's clipboard",
-        WINDOW,
-    ),
-    action(
-        "console-window",
-        "type-console-clipboard",
-        "opens the review of the clipboard text that would be typed into the guest",
-        WINDOW,
     ),
     // The shell.
     view(
@@ -238,15 +164,6 @@ const REVIEWED: &[Reviewed] = &[
         "tab-console",
         "cancel-console-typing",
         "drops the review of the text to type; nothing is sent",
-    ),
-    action(
-        "tab-console",
-        "confirm-console-typing",
-        "types the reviewed text into the guest as key presses",
-        "Not moved, by choice. It confirms an action, and the review it confirms is an inline \
-         group of the tab (opened by the command console.type-clipboard) where the project's \
-         rule would make it a dialog; the review was left as the old front end had it, with \
-         the confirmation beside the text it confirms.",
     ),
     view(
         "tab-console",
@@ -295,65 +212,9 @@ const REVIEWED: &[Reviewed] = &[
         "selects the VM of a finished transfer in its destination pool (after a live move, \
          with its console); it changes no object",
     ),
-    // General: the operation records of a VM.
-    action(
-        "tab-general",
-        "operation-cancel-*",
-        "asks the server to cancel the operation of the record, or stops the remaining steps \
-         of a batch",
-        RECORD,
-    ),
-    action(
-        "tab-general",
-        "operation-recheck-*",
-        "asks the server again for the outcome of an operation whose response was lost",
-        RECORD,
-    ),
-    action(
-        "tab-general",
-        "operation-unknown-*",
-        "opens the review of an unknown outcome",
-        RECORD,
-    ),
-    action(
-        "tab-general",
-        "recovery-cancel-*",
-        "opens the review of a cancellation request",
-        RECORD,
-    ),
-    action(
-        "tab-general",
-        "vm-failure-help-*",
-        "opens the explanation of the record's outcome",
-        RECORD,
-    ),
     // HA.
     view("tab-ha", "ha-vm-filter", "the text filter of the VM grid"),
-    action(
-        "tab-ha",
-        "ha-vms/activate",
-        "a double click or Enter on a VM's row selects the VM and invokes the command \
-         vm.ha.restart-priority, which opens its dialog",
-        "No control is drawn for it: it is the command of the tab's row, invoked through the \
-         command table with the command's own eligibility, for the row it is pressed on.",
-    ),
-    // Home.
-    action(
-        "tab-home",
-        "connections/activate",
-        "a double click or Enter on a connection shows the pool of a connected one, and opens \
-         the settings dialog of one that is not connected",
-        "No control is drawn for it: it is the row's own default action, what the old \
-         interface's \"View pool\" and edit buttons of a connection did; the commands of the \
-         row are in the tab's row and the row's menu.",
-    ),
     // Networking and NICs.
-    action(
-        "tab-networking",
-        "device-recheck-*",
-        "asks the server again for the outcome of a device change whose response was lost",
-        RECORD,
-    ),
     view(
         "tab-networking",
         "network-operation-history",
@@ -384,18 +245,6 @@ const REVIEWED: &[Reviewed] = &[
         "tab-performance",
         "metric-preset-name/clear",
         "empties the name field",
-    ),
-    action(
-        "tab-performance",
-        "metric-preset-remove-*",
-        "removes a saved graph preset from the client's preferences",
-        PRESET,
-    ),
-    action(
-        "tab-performance",
-        "metric-preset-save",
-        "saves the range and the sources of the graph as a preset in the client's preferences",
-        PRESET,
     ),
     view(
         "tab-performance",
@@ -453,27 +302,6 @@ const REVIEWED: &[Reviewed] = &[
     view("tab-search", "search-results/sort", "sorts the results"),
     view("tab-search", "search-text", "the text of the query"),
     // Snapshots.
-    action(
-        "tab-snapshots",
-        "snapshot-preview-load",
-        "asks the host for the saved picture of the selected snapshot and shows it; it changes \
-         nothing on the host",
-        "Not moved, by choice. It acts on the selected snapshot, as the commands of the tab's \
-         row do, and could be one of them. It was left a button of the section it fills, \
-         \"Snapshot information\", where it reports a refusal; it is a read.",
-    ),
-    action(
-        "tab-snapshots",
-        "snapshot-operation-cancel-*",
-        "asks that the remaining steps of a running snapshot workflow are not started",
-        RECORD,
-    ),
-    action(
-        "tab-snapshots",
-        "snapshot-operation-recheck-*",
-        "asks the server again for the outcome of a snapshot workflow whose response was lost",
-        RECORD,
-    ),
     view(
         "tab-snapshots",
         "snapshot-show-created-*",
@@ -485,12 +313,6 @@ const REVIEWED: &[Reviewed] = &[
         "shows the snapshots as a tree or as a list",
     ),
     // Storage.
-    action(
-        "tab-storage",
-        "device-recheck-*",
-        "asks the server again for the outcome of a device change whose response was lost",
-        RECORD,
-    ),
     view("tab-storage", "disk-search", "the text filter of the disks"),
     view(
         "tab-storage",

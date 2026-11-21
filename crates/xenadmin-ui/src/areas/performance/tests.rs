@@ -16,7 +16,8 @@ use xenadmin_core::{
 };
 
 use super::commands::{
-    DATA_SOURCES, MONITORING, NO_SUBSCRIPTION, NOT_CURRENT, PRESETS, RECONNECT,
+    DATA_SOURCES, MONITORING, NO_SUBSCRIPTION, NOT_CURRENT, PRESETS, PRESET_REMOVE, PRESET_SAVE,
+    RECONNECT,
 };
 use super::metrics::MetricsUi;
 use super::monitoring::Panel;
@@ -104,7 +105,7 @@ fn save_apply_and_remove_presets_preserve_the_target() {
     };
     h.click(PRESETS.0);
     h.type_text("metric-preset-name", "CPU history");
-    h.click("metric-preset-save");
+    h.click(PRESET_SAVE.0);
     assert_eq!(
         h.model.preferences.metric_presets.presets.len(),
         1,
@@ -130,7 +131,7 @@ fn save_apply_and_remove_presets_preserve_the_target() {
         Some(presets::APPLIED)
     );
     h.click(PRESETS.0);
-    h.click("metric-preset-remove-CPU history");
+    h.click(PRESET_REMOVE.0);
     assert!(h.model.preferences.metric_presets.presets.is_empty());
 }
 

@@ -16,7 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use xenadmin_ui::areas::console::{view, windows};
+use xenadmin_ui::areas::console::{commands, view, windows};
 use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::{ConsoleWindowId, ConsoleWindowRequest};
 
@@ -103,6 +103,58 @@ impl ConsoleWindowView {
         }
     }
 
+    fn command_row(
+        &self,
+        items: &[xenadmin_ui::command::MenuItem],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if items.is_empty() {
+            return None;
+        }
+        let border = cx.theme().border;
+        let id = self.id;
+        let store = self.ui.store.clone();
+        Some(
+            h_flex()
+                .id(crate::scene_view::LOCAL_ROW_KEY)
+                .test_support()
+                .role(Role::Toolbar)
+                .aria_label("Actions")
+                .w_full()
+                .flex_none()
+                .flex_wrap()
+                .gap_2()
+                .px_4()
+                .py_2()
+                .border_b_1()
+                .border_color(border)
+                .children(items.iter().map(|item| {
+                    let command = item.id;
+                    let base = Button::new(SharedString::from(command.0))
+                        .label(SharedString::from(item.label.clone()))
+                        .outline()
+                        .small();
+                    match &item.disabled {
+                        Some(reason) => base
+                            .disabled(true)
+                            .tooltip(SharedString::from(reason.clone())),
+                        None => {
+                            let store = store.clone();
+                            base.on_click(move |_, _, cx| {
+                                store.update(cx, |store, cx| {
+                                    store.run(
+                                        move |model| commands::press_window(model, id, command),
+                                        cx,
+                                    );
+                                });
+                            })
+                        }
+                    }
+                }))
+                .into_any_element(),
+        )
+    }
+
     fn run_command(&mut self, action: &RunCommand, _: &mut Window, cx: &mut Context<Self>) {
         let id = CommandId(action.id);
         self.ui.store.update(cx, |store, cx| store.invoke(id, cx));
@@ -117,6 +169,7 @@ impl Focusable for ConsoleWindowView {
 
 impl Render for ConsoleWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let row = commands::window_row(self.ui.store.read(cx).model(), self.id);
         let items = view::window(self.ui.store.read(cx).model(), self.id).blocks;
         let scope = format!("{ROOT_KEY}:{}", self.id.0);
         let width = (window.viewport_size().width - px(PADDING * 2.)).max(px(120.));
@@ -165,6 +218,7 @@ impl Render for ConsoleWindowView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .children(title_bar)
+            .children(self.command_row(&row, cx))
             .child(
                 div().w_full().flex_1().min_h_0().overflow_hidden().child(
                     // A column of definite height: the canvas takes what

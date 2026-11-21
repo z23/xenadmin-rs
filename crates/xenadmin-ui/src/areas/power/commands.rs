@@ -15,7 +15,7 @@
 //! Force Shut Down and Force Reboot have a second way for one VM: the
 //! task-aware review of the recovery panel ([`route`]).
 
-use xenadmin_core::{PowerAction, PowerState, VmRecoveryOperation};
+use xenadmin_core::{OperationRecord, OperationState, PowerAction, PowerState, VmRecoveryOperation};
 
 use super::recovery::Review;
 use super::{Guest, NOT_CURRENT, batch, placement, recovery, single, synthetic};
@@ -39,6 +39,11 @@ pub const START_ON_SERVER: CommandId = CommandId("vm.start-on-server");
 pub const RESUME_ON_SERVER: CommandId = CommandId("vm.resume-on-server");
 pub const POWER_SELECTION: CommandId = CommandId("vm.power-selection");
 pub const CHECK_AVAILABILITY: CommandId = CommandId("vm.check-availability");
+pub const REQUEST_CANCEL: CommandId = CommandId("operation.request-cancel");
+pub const RECHECK: CommandId = CommandId("operation.recheck");
+pub const REVIEW_UNKNOWN: CommandId = CommandId("operation.review-unknown");
+pub const REVIEW_CANCELLATION: CommandId = CommandId("operation.review-cancellation");
+pub const EXPLAIN: CommandId = CommandId("operation.explain");
 
 /// The power command of each action, in the order of `PowerAction::ALL`.
 pub const POWER: [(PowerAction, CommandId); 9] = [
@@ -133,7 +138,142 @@ pub fn commands() -> Vec<CommandSpec> {
             .local_scopes(&[ObjectKind::Vm])
             .eligibility(can_check)
             .invoke(check),
+        CommandSpec::new(REQUEST_CANCEL.0, "Request cancellation", AREA)
+            .local(TabId::General, 20)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| on_record(m, target, offers_cancel))
+            .dynamic_label(|m, target| {
+                record(m, target, offers_cancel).map(|record| {
+                    if single::stops_steps(record) {
+                        "Stop remaining steps".into()
+                    } else {
+                        "Request cancellation".into()
+                    }
+                })
+            })
+            .invoke(|m, target| {
+                if let Some(record) = record(m, target, offers_cancel) {
+                    single::request_cancellation(m, record.id);
+                }
+            }),
+        CommandSpec::new(RECHECK.0, "Recheck outcome", AREA)
+            .local(TabId::General, 30)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| on_record(m, target, offers_recheck))
+            .invoke(|m, target| {
+                if let Some(record) = record(m, target, offers_recheck) {
+                    single::recheck(m, record.id);
+                }
+            }),
+        CommandSpec::new(REVIEW_UNKNOWN.0, "Review unknown outcome", AREA)
+            .local(TabId::General, 40)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| on_record(m, target, offers_unknown))
+            .invoke(|m, target| {
+                if let Some(record) = record(m, target, offers_unknown) {
+                    single::review_unknown(m, record.id);
+                }
+            }),
+        CommandSpec::new(REVIEW_CANCELLATION.0, "Review cancellation request…", AREA)
+            .local(TabId::General, 50)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(can_review_cancellation)
+            .invoke(|m, target| {
+                if let Some(record) = record(m, target, offers_review_cancellation) {
+                    recovery::review_cancellation(m, record.id);
+                }
+            }),
+        CommandSpec::new(EXPLAIN.0, "Explain outcome…", AREA)
+            .local(TabId::General, 60)
+            .local_scopes(&[ObjectKind::Vm])
+            .eligibility(|m, target| on_record(m, target, offers_explain))
+            .invoke(|m, target| {
+                if let Some(record) = record(m, target, offers_explain) {
+                    let key = crate::areas::events::OperationKey {
+                        pool: record.pool,
+                        id: record.id,
+                        family: crate::areas::events::Family::Vm,
+                    };
+                    crate::areas::events::explain(m, key);
+                }
+            }),
     ]
+}
+
+fn vm_of(target: &Target) -> Option<(xenadmin_core::PoolId, xenadmin_core::VmId)> {
+    let object = target.single_of(ObjectKind::Vm)?;
+    Some((object.pool?, object.vm_id()?))
+}
+
+fn record<'a>(
+    m: &'a Model,
+    target: &Target,
+    offers: impl Fn(&Model, &OperationRecord) -> bool,
+) -> Option<&'a OperationRecord> {
+    let (pool, vm) = vm_of(target)?;
+    crate::areas::general::operations::recent(m, pool, vm)
+        .into_iter()
+        .find(|record| offers(m, record))
+}
+
+fn on_record(
+    m: &Model,
+    target: &Target,
+    offers: impl Fn(&Model, &OperationRecord) -> bool,
+) -> Eligibility {
+    if vm_of(target).is_none() {
+        return Eligibility::Hidden;
+    }
+    if record(m, target, offers).is_some() {
+        Eligibility::Enabled
+    } else {
+        Eligibility::Hidden
+    }
+}
+
+fn offers_cancel(m: &Model, record: &OperationRecord) -> bool {
+    let _ = m;
+    record.batch_parent.is_none()
+        && record.can_cancel
+        && !record.cancel_requested
+        && !record.state.terminal()
+}
+
+fn offers_recheck(m: &Model, record: &OperationRecord) -> bool {
+    let _ = m;
+    record.batch_parent.is_none()
+        && record.state == OperationState::OutcomeUnknown
+        && record.can_recheck()
+}
+
+fn offers_unknown(m: &Model, record: &OperationRecord) -> bool {
+    let _ = m;
+    record.batch_parent.is_none() && record.state == OperationState::OutcomeUnknown
+}
+
+fn offers_review_cancellation(_: &Model, record: &OperationRecord) -> bool {
+    recovery::offers_cancellation(record)
+}
+
+fn offers_explain(m: &Model, record: &OperationRecord) -> bool {
+    let key = crate::areas::events::OperationKey {
+        pool: record.pool,
+        id: record.id,
+        family: crate::areas::events::Family::Vm,
+    };
+    crate::areas::events::can_explain(m, key)
+}
+
+fn can_review_cancellation(m: &Model, target: &Target) -> Eligibility {
+    let Some(pool) = record(m, target, offers_review_cancellation).map(|record| record.pool)
+    else {
+        return Eligibility::Hidden;
+    };
+    if synthetic(m, pool) || m.can_mutate_pool(pool) {
+        Eligibility::Enabled
+    } else {
+        Eligibility::disabled(super::not_writable(m, pool))
+    }
 }
 
 /// The two ways a power action reaches one VM.

@@ -690,10 +690,18 @@ fn the_page_buttons_are_commands_in_the_menu_the_local_row_and_the_row_menu() {
             "snapshot.properties",
             "snapshot.new-vm",
             "snapshot.new-template",
-            "snapshot.delete"
+            "snapshot.delete",
+            "snapshot.stop-workflow",
+            "snapshot.recheck-outcome",
+            "snapshot.load-preview",
         ]
     );
-    assert!(ours.iter().all(|id| local.contains(id)), "{local:?}");
+    assert!(
+        ours.iter().all(|id| {
+            local.contains(id) || h.eligibility(id) == Eligibility::Hidden
+        }),
+        "{local:?}"
+    );
     let item = h.menu_item(TAKE.0).expect("VM > Take a Snapshot");
     assert_eq!(item.label, "Take a Snapshot");
     assert_eq!(item.disabled, None);
@@ -861,10 +869,17 @@ fn the_tab_lists_the_newest_two_operations_of_the_vm_with_their_controls() {
     assert!(h.has_text(&format!("Created snapshot UUID: {created}")));
     assert!(h.has_text(&format!("Created object UUID: {other}")));
     assert!(h.find(&format!("snapshot-operation-{done_id}")).is_some());
-    // A synthetic pool cannot control an operation; the button says so.
-    let stop = h.node(&format!("snapshot-operation-cancel-{running_id}"));
-    assert_eq!(stop.label.as_deref(), Some("Stop remaining steps"));
-    assert_eq!(stop.disabled.as_deref(), Some(edit::DEMO));
+    // A synthetic pool cannot control an operation; the command says so.
+    // The newest shown workflow that can be stopped is the running one.
+    let _ = running_id;
+    assert_eq!(
+        h.node(commands::STOP_WORKFLOW.0).label.as_deref(),
+        Some("Stop remaining steps")
+    );
+    assert_eq!(
+        h.eligibility(commands::STOP_WORKFLOW.0),
+        Eligibility::disabled(edit::DEMO)
+    );
     // "Show created VM" is a plain selection of the created object.
     h.click(&format!("snapshot-show-created-{done_id}"));
     assert_eq!(
@@ -1012,7 +1027,7 @@ fn cancel_escape_and_a_scope_change_close_the_dialog() {
 fn load_saved_preview_is_disabled_in_a_synthetic_pool() {
     let mut h = selected();
     assert_eq!(
-        h.try_click("snapshot-preview-load"),
+        h.try_click(commands::LOAD_PREVIEW.0),
         Err(inspection::SYNTHETIC.into())
     );
     assert_eq!(
@@ -1056,7 +1071,6 @@ fn the_snapshot_information_key_is_the_section_that_holds_details_and_preview() 
         "snapshot-information-source",
         "snapshot-preview-message",
         "snapshot-preview-image",
-        "snapshot-preview-load",
     ] {
         let node = h.node(key);
         assert!(

@@ -207,7 +207,7 @@ fn clipboard_text_is_typed_only_after_a_review_that_never_shows_it() {
     // No stream in a synthetic pool: "Type it" says why it cannot, and a
     // confirmation that got through anyway types nothing and says so.
     assert_eq!(
-        h.try_click(view::CONFIRM_TYPING),
+        h.try_invoke(commands::CONFIRM_TYPING.0),
         Err(super::recovery::Waiting::Connection.message().into())
     );
     tab_mut(&mut h).confirm_typing();
@@ -676,9 +676,10 @@ fn moving_console_invalidates_old_file_dialog_without_disabling_new_window_expor
     assert!(!path.exists());
     let seat = Seat::Window(id);
     assert!(!session(&h.model, seat).unwrap().export.pending);
-    let nodes = window_nodes(&h, id);
     assert!(
-        keyed(&nodes, "save-console-screenshot").is_some_and(|node| node.disabled.is_none()),
+        commands::window_row(&h.model, id)
+            .iter()
+            .any(|item| item.id == commands::SAVE_SCREENSHOT && item.disabled.is_none()),
         "the window can save a screenshot of its own"
     );
     commands::run(&mut h.model, seat, Control::SaveScreenshot);
@@ -1204,21 +1205,27 @@ fn the_window_scenes_describe_windows_with_their_own_controls() {
         "close-console",
         view::STATUS,
         view::AUTO_RECONNECT,
-        "reconnect-console",
         "console-actual-size",
         "console-fullscreen",
         "console-release-input",
-        "save-console-screenshot",
-        "console-ctrl-alt-delete",
-        "console-ctrl-alt-f1",
-        "console-alt-tab",
-        "send-console-clipboard",
-        "type-console-clipboard",
         "copy-console-clipboard",
         view::CANVAS,
         view::HELP,
     ] {
         assert!(keyed(&nodes, key).is_some(), "{key}");
+    }
+    let row = commands::window_row(&h.model, id);
+    let ids: Vec<&str> = row.iter().map(|item| item.id.0).collect();
+    for id in [
+        "vm.send-ctrl-alt-del",
+        "console.send-alt-tab",
+        "console.send-ctrl-alt-f1",
+        "console.reconnect",
+        "console.save-screenshot",
+        "console.send-clipboard",
+        "console.type-clipboard",
+    ] {
+        assert!(ids.contains(&id), "{id} is not on the window's row: {ids:?}");
     }
     for key in ["detach-console", "console-ctrl-c", "console-ctrl-d"] {
         assert!(keyed(&nodes, key).is_none(), "{key}");
@@ -1233,8 +1240,10 @@ fn the_window_scenes_describe_windows_with_their_own_controls() {
         Some("Actual size".into())
     );
     assert_eq!(
-        label(&nodes, "send-console-clipboard"),
-        Some("Send clipboard to VM".into())
+        row.iter()
+            .find(|item| item.id == commands::SEND_CLIPBOARD)
+            .map(|item| item.label.as_str()),
+        Some("Send clipboard to VM")
     );
     assert_eq!(
         canvas::desktop_size(&h.model, Seat::Window(id)),

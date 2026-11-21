@@ -19,14 +19,13 @@
 //!
 //! The area has no state, no commands and no surfaces: everything it shows
 //! is a tab body. Two sections of a VM's General tab come from other areas:
-//! "Power" (`power::availability_section`) and the controls under each
-//! record of "Operations" (`power::operation_controls`,
-//! `power::cancellation_review_button`, `events::outcome_actions`).
+//! "Power" (`power::availability_section`) and the records of "Operations".
+//! The commands for one of those records are on the tab's row (`power`).
 
 use crate::prelude::*;
 
 mod information;
-mod operations;
+pub(crate) mod operations;
 mod resources;
 #[cfg(test)]
 mod tests;

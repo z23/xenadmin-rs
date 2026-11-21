@@ -12,11 +12,11 @@
 //! `repository-disks`, `disk-count`.
 
 use xenadmin_core::{
-    ClassAvailability, Inventory, OperationAction, OperationControl, OperationState, PoolId, SrId,
+    ClassAvailability, Inventory, OperationAction, OperationState, PoolId, SrId,
     VbdId, VifId, VirtualBlockDevice, VirtualInterface, VmId,
 };
 
-use super::actions::{self, RECONNECT};
+use super::actions;
 use super::commands;
 use crate::prelude::*;
 
@@ -446,6 +446,21 @@ pub(super) fn outcome_state(state: &OperationState) -> OutcomeState {
     }
 }
 
+/// The newest of the four shown device operations that can be rechecked.
+pub(crate) fn recheckable(m: &Model, pool: PoolId, vm: VmId) -> Option<xenadmin_core::OperationId> {
+    m.operation_rows
+        .iter()
+        .rev()
+        .filter(|record| {
+            record.pool == pool
+                && record.vm == vm
+                && matches!(record.action, OperationAction::Device(_))
+        })
+        .take(4)
+        .find(|record| record.state == OperationState::OutcomeUnknown && record.can_recheck())
+        .map(|record| record.id)
+}
+
 /// "Recent device changes": the newest four device operations of the VM,
 /// where they were started.
 fn history(m: &Model, pool: PoolId, vm: VmId) -> Option<Group> {
@@ -461,7 +476,7 @@ fn history(m: &Model, pool: PoolId, vm: VmId) -> Option<Group> {
         .take(4)
         .map(|record| {
             let id = record.id;
-            let mut view = outcome(
+            let view = outcome(
                 format!("device-operation-{id}"),
                 outcome_state(&record.state),
                 format!("{} • {:?}", record.action.label(), record.state),
@@ -479,14 +494,6 @@ fn history(m: &Model, pool: PoolId, vm: VmId) -> Option<Group> {
                     .iter()
                     .map(|step| format!("{} • {:?}: {}", step.label, step.state, step.detail)),
             );
-            if record.state == OperationState::OutcomeUnknown && record.can_recheck() {
-                view = view.action(
-                    button(format!("device-recheck-{id}"), "Recheck outcome", move |m| {
-                        m.control_operation_for(pool, id, OperationControl::Recheck);
-                    })
-                    .disabled_if(!m.can_mutate_pool(pool), RECONNECT),
-                );
-            }
             Block::Outcome(view)
         })
         .collect();

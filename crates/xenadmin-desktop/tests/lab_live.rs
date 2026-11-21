@@ -3614,8 +3614,8 @@ fn lab_p3_migration_cancelled() {
         json!(changes),
     );
     evidence.note("record_changes_in_four_seconds", json!(changes.len()));
-    let review = format!("recovery-cancel-{operation}");
-    let direct = format!("operation-cancel-{operation}");
+    let review = "operation.review-cancellation".to_owned();
+    let direct = "operation.request-cancel".to_owned();
     // A review that the record's progress overtook refuses its
     // confirmation; it is closed and opened again, as its text says.
     let mut overtaken = Vec::new();
@@ -4214,7 +4214,9 @@ fn lab_p3_console_window_and_typing() {
         prompt.contains("1 line break sent as Enter") && prompt.contains("US keyboard"),
         "{prompt}"
     );
-    client.press(console::view::CONFIRM_TYPING);
+    client
+        .try_local(console::commands::CONFIRM_TYPING.0)
+        .expect("Type it on the Console tab's row");
     let took = client.wait_for(Duration::from_secs(120), &mut |client| {
         client
             .pixels_of(console::view::CANVAS)

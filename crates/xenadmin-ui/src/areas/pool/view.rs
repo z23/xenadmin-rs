@@ -31,7 +31,6 @@ use xenadmin_core::{
     VmId,
 };
 
-use super::commands::HA_RESTART_PRIORITY;
 use super::policy::{self, Editor, Kind};
 use super::{DEMO, HA_FIRST, dissolve, join, root_password};
 use crate::prelude::*;
@@ -197,11 +196,6 @@ fn vms(m: &Model, inventory: &Inventory, pool: PoolId) -> Vec<Block> {
         ),
         table("ha-vms", columns, rows)
             .single(selected, select_vm_row)
-            .on_activate(|m, id| {
-                select_vm_row(m, id);
-                let target = m.target();
-                m.invoke(HA_RESTART_PRIORITY, &target);
-            })
             .on_clear(|m| {
                 m.areas.pool.selected_vm = None;
                 m.select_in_grid(Target::none());

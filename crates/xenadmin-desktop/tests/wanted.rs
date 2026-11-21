@@ -159,7 +159,7 @@ const WISHES: &[Wish] = &[
         &[
             NoSurface,
             Reach(&["snapshot-information", "snapshot-preview-image"]),
-            Disabled("snapshot-preview-load", ""),
+            Disabled("local:snapshot.load-preview", ""),
         ],
     ),
     row(
@@ -288,11 +288,11 @@ const WISHES: &[Wish] = &[
         &[
             Press("local:performance.presets"),
             Type("metric-preset-name", "night"),
-            Press("metric-preset-save"),
-            Reach(&["metric-preset-night", "metric-preset-remove-night"]),
+            Press("local:performance.preset-save"),
+            Reach(&["metric-preset-night"]),
             Press("metric-preset-night"),
             Press("local:performance.presets"),
-            Press("metric-preset-remove-night"),
+            Press("local:performance.preset-remove"),
             Absent(&["metric-preset-night"]),
         ],
     ),

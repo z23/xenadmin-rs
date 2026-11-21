@@ -261,7 +261,7 @@ pub fn review_unknown(m: &mut Model, id: OperationId) {
 
 /// Whether cancelling stops the remaining steps of a workflow, which is how
 /// the button is worded for it.
-fn stops_steps(record: &OperationRecord) -> bool {
+pub(crate) fn stops_steps(record: &OperationRecord) -> bool {
     matches!(
         record.action,
         OperationAction::Lifecycle(_)

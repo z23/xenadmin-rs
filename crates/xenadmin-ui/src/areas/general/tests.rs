@@ -22,6 +22,7 @@ use std::sync::Arc;
 use xenadmin_core::{ClassAvailability, Inventory, PbdId, PoolId, SrId, StorageAttachment};
 
 use super::*;
+use crate::prelude::Eligibility;
 use crate::Harness;
 
 fn inventory(h: &Harness) -> Inventory {
@@ -589,63 +590,38 @@ fn the_general_tab_of_a_vm_lists_its_recent_operations_with_their_rune_controls(
         h.node("general-operations-note").text.as_deref(),
         Some("Demo mode cannot change infrastructure.")
     );
-    // Under each record what Rune showed under it, and nothing twice.
-    let under = |h: &Harness, index: u128| -> Vec<(String, String)> {
-        let id = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0000 + index);
-        h.nodes()
-            .into_iter()
-            .filter(|node| node.role == "button" && node.path.contains(&format!("vm-operation-{id}")))
-            .map(|node| {
-                let key = node.key.unwrap_or_default();
-                (
-                    key.strip_suffix(&id.to_string()).unwrap_or(&key).to_owned(),
-                    node.label.unwrap_or_default(),
-                )
-            })
-            .collect()
-    };
-    let pair = |key: &str, label: &str| (key.to_owned(), label.to_owned());
-    // An unknown outcome: its explanation (events), then the review of the
-    // power area. A fixture record cannot be rechecked.
-    assert_eq!(
-        under(&h, 20),
-        [
-            pair("vm-failure-help-", "Explain outcome…"),
-            pair("operation-unknown-", "Review unknown outcome"),
-        ]
-    );
-    // In progress and cancellable: the request and its reviewed form.
-    assert_eq!(
-        under(&h, 19),
-        [
-            pair("operation-cancel-", "Request cancellation"),
-            pair("recovery-cancel-", "Review cancellation request…"),
-        ]
-    );
-    // A finished record has nothing to press.
-    assert!(under(&h, 12).is_empty());
     h.assert_unique_keys();
-    // The buttons do what they did in Rune. The explanation opens over the
-    // tab; the review is the one acknowledgement dialog, in its Rune style.
-    let unknown = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0014);
-    h.click(&format!("vm-failure-help-{unknown}"));
+    // The commands of the row do what the buttons under each record did.
+    // An unknown outcome is the first unfinished record, so Explain and
+    // Review unknown act on it. A fixture record cannot be rechecked.
+    assert_eq!(h.eligibility("operation.explain"), Eligibility::Enabled);
+    assert_eq!(
+        h.eligibility("operation.review-unknown"),
+        Eligibility::Enabled
+    );
+    assert_eq!(h.eligibility("operation.recheck"), Eligibility::Hidden);
+    h.click("operation.explain");
     assert_eq!(h.surface().id, "failure-help-dialog");
     h.dismiss();
-    let review = format!("operation-unknown-{unknown}");
-    assert_eq!(h.node(&review).tone, Some(Tone::Warning));
-    h.click(&review);
+    h.click("operation.review-unknown");
     assert_eq!(h.surface().id, "unknown-outcome");
     assert_eq!(h.surface().title, "Acknowledge unknown outcome");
     h.dismiss();
     assert!(h.surfaces().is_empty());
-    // The reviewed cancellation is the power area's recovery review.
-    let running = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0013);
-    h.click(&format!("recovery-cancel-{running}"));
+    // The running record is the one that can be cancelled.
+    assert_eq!(
+        h.node("operation.review-cancellation").label.as_deref(),
+        Some("Review cancellation request…")
+    );
+    h.click("operation.review-cancellation");
     assert_eq!(h.surface().id, "vm-recovery");
     h.dismiss();
-    // Asking directly needs a connection: the refusal is on the error line.
+    assert_eq!(
+        h.node("operation.request-cancel").label.as_deref(),
+        Some("Request cancellation")
+    );
     h.model.error = None;
-    h.click(&format!("operation-cancel-{running}"));
+    h.click("operation.request-cancel");
     assert_eq!(h.model.error, Some(xenadmin_core::Error::Closed.to_string()));
     // Above the operations: why each power action is or is not available,
     // the power area's section.
