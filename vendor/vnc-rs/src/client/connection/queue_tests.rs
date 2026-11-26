@@ -22,9 +22,10 @@ async fn decoder_error_releases_network_before_output_drains() {
         .unwrap();
     {
         let inner = client.inner.lock().await;
+        let output = client.output.lock().await;
         assert_eq!(inner.input_ch.max_capacity(), 4096);
-        assert_eq!(inner.output_ch.max_capacity(), 2);
-        assert_eq!(inner.output_ch.len(), 2);
+        assert_eq!(output.max_capacity(), 2);
+        assert_eq!(output.len(), 2);
     }
     server.write_all(&[1]).await.unwrap(); // unsupported SetColorMapEntries
                                            // The decoder must release the socket even while its error cannot be queued.

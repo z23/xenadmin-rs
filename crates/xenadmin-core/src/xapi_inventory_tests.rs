@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ActionAvailability, ClassAvailability, PowerAction};
+use crate::{ActionAvailability, ClassAvailability, PoolId, PowerAction};
 use std::sync::atomic::AtomicUsize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},

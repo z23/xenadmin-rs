@@ -21,8 +21,11 @@
 //! inventories. The shell calls it after an update that changed something,
 //! not on every frame.
 
+use std::collections::HashMap;
+use std::sync::Weak;
+
 use serde::Serialize;
-use xenadmin_core::{Inventory, PoolId, ProfileId};
+use xenadmin_core::{ConnectionState, HostId, Inventory, PoolId, ProfileId, Vm};
 
 use crate::format::natural_cmp;
 use crate::model::Model;
@@ -198,6 +201,119 @@ fn kind_word(kind: ObjectKind) -> &'static str {
     }
 }
 
+/// Lightweight key for the inputs that determine [`rows`] for standard views.
+/// Holding a `Weak<Inventory>` pins the control-block address without retaining
+/// old inventory data, preventing pointer-reuse collisions in tests or reconnects.
+#[derive(Clone)]
+pub struct NavRowsFingerprint {
+    view: NavView,
+    filter: String,
+    show_custom_templates: bool,
+    show_builtin_templates: bool,
+    show_local_storage: bool,
+    sessions: Vec<SessionFingerprint>,
+}
+
+#[derive(Clone)]
+struct SessionFingerprint {
+    profile: ProfileId,
+    name: String,
+    state: Option<ConnectionState>,
+    status: &'static str,
+    synthetic: bool,
+    selected: bool,
+    account: Option<String>,
+    inventory: Option<(Weak<Inventory>, PoolId, u64)>,
+}
+
+impl PartialEq for SessionFingerprint {
+    fn eq(&self, other: &Self) -> bool {
+        self.profile == other.profile
+            && self.name == other.name
+            && self.state == other.state
+            && self.status == other.status
+            && self.synthetic == other.synthetic
+            && self.selected == other.selected
+            && self.account == other.account
+            && match (&self.inventory, &other.inventory) {
+                (None, None) => true,
+                (Some((a_inv, a_pool, a_rev)), Some((b_inv, b_pool, b_rev))) => {
+                    a_pool == b_pool
+                        && a_rev == b_rev
+                        && a_inv.strong_count() > 0
+                        && Weak::ptr_eq(a_inv, b_inv)
+                }
+                _ => false,
+            }
+    }
+}
+
+impl Eq for SessionFingerprint {}
+
+impl PartialEq for NavRowsFingerprint {
+    fn eq(&self, other: &Self) -> bool {
+        self.view == other.view
+            && self.filter == other.filter
+            && self.show_custom_templates == other.show_custom_templates
+            && self.show_builtin_templates == other.show_builtin_templates
+            && self.show_local_storage == other.show_local_storage
+            && self.sessions == other.sessions
+    }
+}
+
+impl Eq for NavRowsFingerprint {}
+
+/// Returns a comparable fingerprint of the inputs to [`rows`] when the active view
+/// depends solely on navigation settings and session inventories. Returns `None`
+/// for area-provided views whose rows depend on area-local state.
+pub fn rows_fingerprint(m: &Model) -> Option<NavRowsFingerprint> {
+    match m.nav.view {
+        NavView::Notifications => Some(NavRowsFingerprint {
+            view: NavView::Notifications,
+            filter: m.nav.filter.clone(),
+            show_custom_templates: false,
+            show_builtin_templates: false,
+            show_local_storage: false,
+            sessions: Vec::new(),
+        }),
+        NavView::Infrastructure | NavView::Objects => {
+            let sessions = session::sessions(m)
+                .into_iter()
+                .map(|view| {
+                    let account = m
+                        .workspace
+                        .session_accounts
+                        .get(&view.profile)
+                        .map(|(username, _)| username.clone());
+                    let inventory = view
+                        .inventory
+                        .as_ref()
+                        .map(|inv| (std::sync::Arc::downgrade(inv), inv.pool_id, inv.revision));
+                    SessionFingerprint {
+                        profile: view.profile,
+                        name: view.name,
+                        state: view.state,
+                        status: view.status,
+                        synthetic: view.synthetic,
+                        selected: view.selected,
+                        account,
+                        inventory,
+                    }
+                })
+                .collect();
+            Some(NavRowsFingerprint {
+                view: m.nav.view,
+                filter: m.nav.filter.clone(),
+                show_custom_templates: m.nav.show_custom_templates,
+                show_builtin_templates: m.nav.show_builtin_templates,
+                show_local_storage: m.nav.show_local_storage,
+                sessions,
+            })
+        }
+        NavView::Organization | NavView::SavedSearches => None,
+    }
+}
+
 /// The rows of the active view, narrowed by the filter.
 pub fn rows(m: &Model) -> Vec<NavRow> {
     filter_rows(view_rows(m, m.nav.view), &m.nav.filter)
@@ -237,6 +353,21 @@ pub fn selected_ids(m: &Model, rows: &[NavRow]) -> Vec<String> {
         .collect()
 }
 
+fn contains_ci(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let needle = needle_lower.as_bytes();
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
 /// Keeps the rows a filter text matches, with their ancestors and their
 /// descendants. A row matches when its label contains the text, ignoring
 /// case, or its object's id (the UUID) contains it: the substring rule of
@@ -247,19 +378,18 @@ pub fn filter_rows(rows: Vec<NavRow>, filter: &str) -> Vec<NavRow> {
     if query.is_empty() {
         return rows;
     }
-    let index: std::collections::BTreeMap<&str, usize> = rows
-        .iter()
-        .enumerate()
-        .map(|(position, row)| (row.id.as_str(), position))
-        .collect();
+    let mut index: HashMap<&str, usize> = HashMap::with_capacity(rows.len());
+    for (position, row) in rows.iter().enumerate() {
+        index.insert(row.id.as_str(), position);
+    }
     let matches: Vec<bool> = rows
         .iter()
         .map(|row| {
-            row.label.to_lowercase().contains(&query)
+            contains_ci(&row.label, &query)
                 || row
                     .object
                     .as_ref()
-                    .is_some_and(|object| object.id.to_lowercase().contains(&query))
+                    .is_some_and(|object| contains_ci(&object.id, &query))
         })
         .collect();
     let parents: Vec<Option<usize>> = rows
@@ -394,6 +524,24 @@ fn infrastructure(m: &Model) -> Vec<NavRow> {
                 .parent(parent)
                 .object(object)
         };
+        let mut guests_by_host: HashMap<HostId, Vec<&Vm>> =
+            HashMap::with_capacity(inventory.hosts.len());
+        let mut unplaced: Vec<&Vm> = Vec::new();
+        let mut templates: Vec<&Vm> = Vec::new();
+        for vm in inventory.vms.values() {
+            if vm.is_control_domain {
+                continue;
+            }
+            if vm.is_template {
+                if shows_template(m, &inventory, vm.id) {
+                    templates.push(vm);
+                }
+            } else if let Some(host_id) = vm.host {
+                guests_by_host.entry(host_id).or_default().push(vm);
+            } else {
+                unplaced.push(vm);
+            }
+        }
         for host in by_name(inventory.hosts.values().collect(), |host| &host.name) {
             let object = ObjectRef::host(pool, host.id);
             let host_row = object_row_id(view.profile, &object);
@@ -402,40 +550,22 @@ fn infrastructure(m: &Model) -> Vec<NavRow> {
                 row = row.status("Disabled");
             }
             rows.push(row);
-            let guests = by_name(
-                inventory
-                    .guests()
-                    .filter(|vm| vm.host == Some(host.id))
-                    .collect(),
-                |vm| &vm.name,
-            );
-            for vm in guests {
-                rows.push(
-                    child(ObjectRef::vm(pool, vm.id), &vm.name, &host_row)
-                        .status(vm.power_state.to_string()),
-                );
+            if let Some(guests) = guests_by_host.remove(&host.id) {
+                for vm in by_name(guests, |vm| &vm.name) {
+                    rows.push(
+                        child(ObjectRef::vm(pool, vm.id), &vm.name, &host_row)
+                            .status(vm.power_state.to_string()),
+                    );
+                }
             }
         }
-        let unplaced = by_name(
-            inventory.guests().filter(|vm| vm.host.is_none()).collect(),
-            |vm| &vm.name,
-        );
-        for vm in unplaced {
+        for vm in by_name(unplaced, |vm| &vm.name) {
             rows.push(
                 child(ObjectRef::vm(pool, vm.id), &vm.name, &root)
                     .status(vm.power_state.to_string()),
             );
         }
-        let templates = by_name(
-            inventory
-                .vms
-                .values()
-                .filter(|vm| vm.is_template && !vm.is_control_domain)
-                .filter(|vm| shows_template(m, &inventory, vm.id))
-                .collect(),
-            |vm| &vm.name,
-        );
-        for vm in templates {
+        for vm in by_name(templates, |vm| &vm.name) {
             rows.push(child(ObjectRef::template(pool, vm.id), &vm.name, &root));
         }
         let storage = by_name(

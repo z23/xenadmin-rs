@@ -190,14 +190,26 @@ impl DesktopInstance {
             }
             fs::remove_file(&path)?;
         }
-        let listener = std::os::unix::net::UnixListener::bind(&path)?;
-        let m = fs::symlink_metadata(&path)?;
-        let socket = SocketFile {
-            path,
+        let tmp = self.directory.join(format!(".{SOCKET}.tmp"));
+        if let Ok(stale) = fs::symlink_metadata(&tmp) {
+            if !stale.file_type().is_socket() || stale.uid() != owner {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Desktop activation staging path must be a private user-owned socket",
+                ));
+            }
+            fs::remove_file(&tmp)?;
+        }
+        let listener = std::os::unix::net::UnixListener::bind(&tmp)?;
+        let m = fs::symlink_metadata(&tmp)?;
+        let mut socket = SocketFile {
+            path: tmp,
             device: m.dev(),
             inode: m.ino(),
         };
         fs::set_permissions(&socket.path, fs::Permissions::from_mode(0o600))?;
+        fs::rename(&socket.path, &path)?;
+        socket.path = path;
         listener.set_nonblocking(true)?;
         let cancel = CancellationToken::new();
         let stopped = cancel.clone();

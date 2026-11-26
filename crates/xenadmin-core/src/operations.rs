@@ -768,13 +768,38 @@ impl Journal {
     }
     pub(crate) fn open(directory: &Path) -> Result<Self, Error> {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let path = directory.join("operations.sqlite3");
+        // Fast path for an already-initialized journal: `symlink_metadata` never opens
+        // a file descriptor (so existing SQLite POSIX locks stay intact) and avoids
+        // taking the process-wide initialization mutex across concurrent pools/workers.
+        if std::fs::symlink_metadata(&path).is_ok() {
+            let connection = rusqlite::Connection::open(&path)
+                .map_err(|error| journal_sqlite_failure("open", error))?;
+            connection
+                .busy_timeout(Duration::from_secs(2))
+                .map_err(|error| journal_sqlite_failure("busy-timeout", error))?;
+            let version: u64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| journal_sqlite_failure("read-version", error))?;
+            if version > JOURNAL_FORMAT {
+                return Err(Error::JournalVersion);
+            }
+            let journal_mode: String = connection
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .map_err(|error| journal_sqlite_failure("read-journal-mode", error))?;
+            if version == JOURNAL_FORMAT && journal_mode.eq_ignore_ascii_case("wal") {
+                connection
+                    .execute_batch("PRAGMA synchronous=FULL;")
+                    .map_err(|error| journal_sqlite_failure("full-durability", error))?;
+                return Ok(Self(connection));
+            }
+        }
         let _initializing = JOURNAL_INITIALIZATION.lock().map_err(|_| Error::Journal)?;
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(directory)
             .map_err(|error| journal_file_failure("directory", error))?;
-        let path = directory.join("operations.sqlite3");
         // Closing a non-SQLite fd for an existing database releases this process's
         // POSIX locks, including locks owned by other live SQLite connections.
         match std::fs::OpenOptions::new()

@@ -94,6 +94,7 @@ async fn invalid_rectangles_and_lengths_are_rejected_before_payload_reads() {
                 ],
                 &AtomicU32::new(pack_screen((64, 64))),
                 &DesktopState::default(),
+                None,
             ),
         )
         .await
@@ -136,6 +137,7 @@ async fn raw_is_implicit_and_resize_changes_decoder_bounds() {
         &[VncEncoding::DesktopSizePseudo],
         &AtomicU32::new(pack_screen((64, 64))),
         &DesktopState::default(),
+        None,
     )
     .await;
     assert!(matches!(result, Err(VncError::IoError(_))));
@@ -179,6 +181,7 @@ async fn shutdown_interrupts_a_full_event_queue() {
         &[],
         &screen,
         &desktop,
+        None,
     );
     tokio::pin!(task);
     assert!(futures::poll!(task.as_mut()).is_pending());
@@ -277,21 +280,25 @@ async fn full_input_queue_does_not_hold_the_client_lock_during_close() {
             .unwrap();
     }
     let (_events, output_ch) = channel(OUTPUT_CHANNEL_SIZE);
+    let (_updates_tx, updates_rx) = watch::channel(0u64);
     let (network_stop, network_stopped) = oneshot::channel();
     let (decoder_stop, decoder_stopped) = oneshot::channel();
     let desktop = Arc::new(DesktopState::default());
+    let closed = Arc::new(AtomicBool::new(false));
     let client = VncClient {
         desktop: Arc::clone(&desktop),
         input_ch: input_ch.clone(),
+        output: Arc::new(Mutex::new(output_ch)),
+        closed: Arc::clone(&closed),
+        updates: updates_rx,
         inner: Arc::new(Mutex::new(VncInner {
             name: String::new(),
             screen: Arc::new(AtomicU32::new(pack_screen((1, 1)))),
             desktop,
             input_ch,
-            output_ch,
             decoding_stop: Some(decoder_stop),
             net_conn_stop: Some(network_stop),
-            closed: false,
+            closed,
         })),
     };
     let pending = client.input(X11Event::Refresh);
@@ -347,6 +354,7 @@ async fn console_extensions_require_advertisement_and_report_server_acceptance()
                 &encodings,
                 &AtomicU32::new(pack_screen((64, 64))),
                 &DesktopState::default(),
+                None,
             )
             .await;
             // The finite fixture ends after its metadata, so EOF is expected.

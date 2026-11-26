@@ -34,102 +34,131 @@ pub(super) fn decode(
     refs: &References,
     states: &mut BTreeMap<String, ClassAvailability>,
 ) -> NetworkFabricInventory {
-    let controllers = records(store, "sdn_controller", states, |record| {
-        let view = SdnControllerRecord::new(record);
-        let id = id(view.uuid())?;
-        Ok((
-            id,
-            SdnController {
+    let mut result = NetworkFabricInventory::default();
+    update(
+        &mut result,
+        store,
+        refs,
+        states,
+        ClassMask::ALL,
+        ClassMask::ALL,
+    );
+    result
+}
+
+pub(super) fn update(
+    result: &mut NetworkFabricInventory,
+    store: &Store,
+    refs: &References,
+    states: &mut BTreeMap<String, ClassAvailability>,
+    data_dirty: ClassMask,
+    ref_dirty: ClassMask,
+) {
+    if data_dirty.contains(ClassMask::SDN_CONTROLLER) {
+        reset_optional_class_state(store, "sdn_controller", states);
+        result.controllers = records(store, "sdn_controller", states, |record| {
+            let view = SdnControllerRecord::new(record);
+            let id = id(view.uuid())?;
+            Ok((
                 id,
-                configuration: controller(record),
-            },
-        ))
-    });
-    let tunnels = records(store, "tunnel", states, |record| {
-        let view = TunnelRecord::new(record);
-        let id = id(view.uuid())?;
-        let status = view
-            .status()
-            .entries()
-            .filter(|map| map.len() <= 32 && map.values().all(Value::is_string));
-        let active = status
-            .and_then(|map| map.get("active"))
-            .and_then(Value::as_str)
-            .and_then(|v| match v {
+                SdnController {
+                    id,
+                    configuration: controller(record),
+                },
+            ))
+        });
+    }
+    if data_dirty.contains(ClassMask::TUNNEL) || ref_dirty.contains(ClassMask::PIF) {
+        reset_optional_class_state(store, "tunnel", states);
+        result.tunnels = records(store, "tunnel", states, |record| {
+            let view = TunnelRecord::new(record);
+            let id = id(view.uuid())?;
+            let status = view
+                .status()
+                .entries()
+                .filter(|map| map.len() <= 32 && map.values().all(Value::is_string));
+            let active = status
+                .and_then(|map| map.get("active"))
+                .and_then(Value::as_str)
+                .and_then(|v| match v {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                });
+            Ok((
+                id,
+                NetworkTunnel {
+                    id,
+                    transport: refs.link(view.transport_pif()),
+                    access: refs.link(view.access_pif()),
+                    protocol: view.protocol().name().and_then(TunnelProtocol::parse),
+                    controller_active: active,
+                    controller_error: status.map(|map| {
+                        map.get("error")
+                            .and_then(Value::as_str)
+                            .is_some_and(|v| !v.is_empty())
+                    }),
+                },
+            ))
+        });
+    }
+    if data_dirty.contains(ClassMask::NETWORK_SRIOV) || ref_dirty.contains(ClassMask::PIF) {
+        reset_optional_class_state(store, "network_sriov", states);
+        result.sriovs = records(store, "network_sriov", states, |record| {
+            let view = NetworkSriovRecord::new(record);
+            let id = id(view.uuid())?;
+            Ok((
+                id,
+                NetworkSriov {
+                    id,
+                    physical: refs.link(view.physical_pif()),
+                    logical: refs.link(view.logical_pif()),
+                    requires_reboot: boolean(view.requires_reboot())?,
+                    mode: view
+                        .configuration_mode()
+                        .name()
+                        .and_then(SriovConfigurationMode::parse),
+                },
+            ))
+        });
+    }
+    if data_dirty.contains(ClassMask::PCI) || ref_dirty.contains(ClassMask::HOST) {
+        reset_optional_class_state(store, "pci", states);
+        result.pci_devices = records(store, "pci", states, |record| {
+            let view = PciRecord::new(record);
+            let id = id(view.uuid())?;
+            Ok((
+                id,
+                NetworkPciDevice {
+                    id,
+                    host: refs.link(view.host()),
+                    address: text(view.pci_id(), 64),
+                    vendor_id: text(view.vendor_id(), 16),
+                    device_id: text(view.device_id(), 16),
+                    driver: text(view.driver_name(), 128),
+                },
+            ))
+        });
+    }
+    if data_dirty.contains(ClassMask::PIF) || ref_dirty.contains(ClassMask::PCI) {
+        result.pif_pci.clear();
+        for (_, record) in store.class("pif") {
+            let view = PifRecord::new(record);
+            if let (Ok(id), Some(pci)) = (id(view.uuid()), refs.link(view.pci())) {
+                result.pif_pci.insert(id, pci);
+            }
+        }
+    }
+    if data_dirty.contains(ClassMask::POOL) {
+        result.pool_sriov_restricted = store.class("pool").next().and_then(|(_, p)| {
+            let view = PoolRecord::new(p);
+            match view.restrictions()["restrict_network_sriov"].as_str()? {
                 "true" => Some(true),
                 "false" => Some(false),
                 _ => None,
-            });
-        Ok((
-            id,
-            NetworkTunnel {
-                id,
-                transport: refs.link(view.transport_pif()),
-                access: refs.link(view.access_pif()),
-                protocol: view.protocol().name().and_then(TunnelProtocol::parse),
-                controller_active: active,
-                controller_error: status.map(|map| {
-                    map.get("error")
-                        .and_then(Value::as_str)
-                        .is_some_and(|v| !v.is_empty())
-                }),
-            },
-        ))
-    });
-    let sriovs = records(store, "network_sriov", states, |record| {
-        let view = NetworkSriovRecord::new(record);
-        let id = id(view.uuid())?;
-        Ok((
-            id,
-            NetworkSriov {
-                id,
-                physical: refs.link(view.physical_pif()),
-                logical: refs.link(view.logical_pif()),
-                requires_reboot: boolean(view.requires_reboot())?,
-                mode: view
-                    .configuration_mode()
-                    .name()
-                    .and_then(SriovConfigurationMode::parse),
-            },
-        ))
-    });
-    let pci_devices = records(store, "pci", states, |record| {
-        let view = PciRecord::new(record);
-        let id = id(view.uuid())?;
-        Ok((
-            id,
-            NetworkPciDevice {
-                id,
-                host: refs.link(view.host()),
-                address: text(view.pci_id(), 64),
-                vendor_id: text(view.vendor_id(), 16),
-                device_id: text(view.device_id(), 16),
-                driver: text(view.driver_name(), 128),
-            },
-        ))
-    });
-    let mut result = NetworkFabricInventory {
-        controllers,
-        tunnels,
-        sriovs,
-        pci_devices,
-        ..Default::default()
-    };
-    for (_, record) in store.class("pif") {
-        let view = PifRecord::new(record);
-        if let (Ok(id), Some(pci)) = (id(view.uuid()), refs.link(view.pci())) {
-            result.pif_pci.insert(id, pci);
-        }
+            }
+        });
     }
-    result.pool_sriov_restricted = store.class("pool").next().and_then(|(_, p)| {
-        let view = PoolRecord::new(p);
-        match view.restrictions()["restrict_network_sriov"].as_str()? {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        }
-    });
-    result
 }
 
 #[cfg(test)]
@@ -172,11 +201,8 @@ mod tests {
             ),
         ];
         for (class, reference, value) in rows {
-            store
-                .records
-                .entry(class.into())
-                .or_default()
-                .insert(format!("OpaqueRef:{reference}"), value);
+            Arc::make_mut(store.records.entry(class.into()).or_default())
+                .insert(format!("OpaqueRef:{reference}"), Arc::new(value));
             store
                 .classes
                 .insert(class.into(), ClassAvailability::Available);
@@ -225,27 +251,24 @@ mod tests {
     #[test]
     fn unknown_controller_protocol_and_tunnel_status_remain_unknown_not_usable_defaults() {
         let mut store = store();
-        store
-            .records
-            .get_mut("sdn_controller")
-            .unwrap()
-            .get_mut("OpaqueRef:controller")
-            .unwrap()["protocol"] = json!("future-protocol");
-        store
-            .records
-            .get_mut("tunnel")
-            .unwrap()
-            .get_mut("OpaqueRef:tunnel")
-            .unwrap()["status"] = json!({"active":"future-state"});
-        store
-            .records
-            .get_mut("network_sriov")
-            .unwrap()
-            .get_mut("OpaqueRef:sriov")
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .remove("requires_reboot");
+        Arc::make_mut(
+            Arc::make_mut(store.records.get_mut("sdn_controller").unwrap())
+                .get_mut("OpaqueRef:controller")
+                .unwrap(),
+        )["protocol"] = json!("future-protocol");
+        Arc::make_mut(
+            Arc::make_mut(store.records.get_mut("tunnel").unwrap())
+                .get_mut("OpaqueRef:tunnel")
+                .unwrap(),
+        )["status"] = json!({"active":"future-state"});
+        Arc::make_mut(
+            Arc::make_mut(store.records.get_mut("network_sriov").unwrap())
+                .get_mut("OpaqueRef:sriov")
+                .unwrap(),
+        )
+        .as_object_mut()
+        .unwrap()
+        .remove("requires_reboot");
         let details = super::super::decode(&store);
         assert!(
             details

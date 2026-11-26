@@ -1,6 +1,28 @@
-use crate::{Inventory, OrganizationObjectId as Id, PoolId, PowerState};
+use crate::{HostId, Inventory, OrganizationObjectId as Id, PoolId, PowerState};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+fn contains_ci(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let needle = needle_lower.as_bytes();
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
+fn folder_matches(folder: &str, filter: &str) -> bool {
+    folder == filter
+        || folder
+            .strip_prefix(filter)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SearchKind {
@@ -111,154 +133,261 @@ impl InventorySearch {
         Ok(())
     }
     pub fn matches(&self, row: &SearchResult) -> bool {
-        let contains =
-            |haystack: &str, needle: &str| haystack.to_lowercase().contains(&needle.to_lowercase());
-        (self.kinds.is_empty() || self.kinds.contains(&row.kind))
-            && (self.pools.is_empty() || self.pools.contains(&row.pool))
-            && self
+        if !(self.kinds.is_empty() || self.kinds.contains(&row.kind))
+            || !(self.pools.is_empty() || self.pools.contains(&row.pool))
+            || !self
                 .power
                 .as_ref()
                 .is_none_or(|state| row.power.as_ref() == Some(state))
-            && (self.host.is_empty() || contains(&row.host, &self.host))
-            && (self.text.trim().is_empty()
-                || [
-                    &row.name,
-                    &row.description,
-                    &row.host,
-                    &row.pool_name,
-                    &row.object.uuid().to_string(),
-                ]
-                .iter()
-                .any(|s| contains(s, self.text.trim())))
-            && self
-                .tags
-                .iter()
-                .all(|tag| row.tags.as_ref().is_some_and(|tags| tags.contains(tag)))
-            && (self.folder.is_empty()
-                || row.metadata_known
-                    && row.folder.as_ref().is_some_and(|f| {
-                        f == &self.folder
-                            || f.strip_prefix(&self.folder)
-                                .is_some_and(|rest| rest.starts_with('/'))
-                    }))
-            && (self.custom_fields.is_empty()
-                || row.metadata_known
-                    && self
-                        .custom_fields
-                        .iter()
-                        .all(|(key, value)| row.custom_fields.get(key) == Some(value)))
+        {
+            return false;
+        }
+        if !self.host.is_empty() {
+            let host_needle = self.host.to_lowercase();
+            if !contains_ci(&row.host, &host_needle) {
+                return false;
+            }
+        }
+        let text = self.text.trim();
+        if !text.is_empty() {
+            let text_needle = text.to_lowercase();
+            let mut uuid_buf = uuid::Uuid::encode_buffer();
+            let uuid_text = row.object.uuid().hyphenated().encode_lower(&mut uuid_buf);
+            let hit = contains_ci(&row.name, &text_needle)
+                || contains_ci(&row.description, &text_needle)
+                || contains_ci(&row.host, &text_needle)
+                || contains_ci(&row.pool_name, &text_needle)
+                || contains_ci(uuid_text, &text_needle);
+            if !hit {
+                return false;
+            }
+        }
+        if !self
+            .tags
+            .iter()
+            .all(|tag| row.tags.as_ref().is_some_and(|tags| tags.contains(tag)))
+        {
+            return false;
+        }
+        if !self.folder.is_empty()
+            && !(row.metadata_known
+                && row
+                    .folder
+                    .as_deref()
+                    .is_some_and(|f| folder_matches(f, &self.folder)))
+        {
+            return false;
+        }
+        self.custom_fields.is_empty()
+            || row.metadata_known
+                && self
+                    .custom_fields
+                    .iter()
+                    .all(|(key, value)| row.custom_fields.get(key) == Some(value))
     }
     pub fn run(&self, inventory: &Inventory) -> Result<Vec<SearchResult>, String> {
         self.validate()?;
-        let metadata = inventory
-            .details
-            .organization
-            .objects
-            .iter()
-            .map(|o| (o.id, o))
-            .collect::<BTreeMap<_, _>>();
+        if !self.pools.is_empty() && !self.pools.contains(&inventory.pool_id) {
+            return Ok(Vec::new());
+        }
+        let want_kind = |kind: SearchKind| self.kinds.is_empty() || self.kinds.contains(&kind);
+        let host_needle = if self.host.is_empty() {
+            String::new()
+        } else {
+            self.host.to_lowercase()
+        };
+        let text_needle = {
+            let trimmed = self.text.trim();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                trimmed.to_lowercase()
+            }
+        };
+        let pool_name_matches =
+            !text_needle.is_empty() && contains_ci(&inventory.pool_name, &text_needle);
+        let mut metadata = HashMap::with_capacity(inventory.details.organization.objects.len());
+        for object in &inventory.details.organization.objects {
+            metadata.insert(object.id, object);
+        }
+        let mut host_labels: HashMap<HostId, String> = HashMap::new();
+        if want_kind(SearchKind::Host)
+            || want_kind(SearchKind::Vm)
+            || want_kind(SearchKind::Template)
+        {
+            host_labels.reserve(inventory.hosts.len());
+            for h in inventory.hosts.values() {
+                host_labels.insert(h.id, format!("{} {} {}", h.name, h.address, h.id));
+            }
+        }
         let mut rows = Vec::new();
-        let mut add = |object, kind, name: &str, description: &str, host: String, power| {
-            let meta = metadata.get(&object);
-            let row = SearchResult {
+        let mut maybe_add = |object: Id,
+                             kind: SearchKind,
+                             name: &str,
+                             description: &str,
+                             host: &str,
+                             power: Option<&PowerState>| {
+            if !self.power.as_ref().is_none_or(|state| power == Some(state)) {
+                return;
+            }
+            if !host_needle.is_empty() && !contains_ci(host, &host_needle) {
+                return;
+            }
+            if !text_needle.is_empty() && !pool_name_matches {
+                let mut uuid_buf = uuid::Uuid::encode_buffer();
+                let uuid_text = object.uuid().hyphenated().encode_lower(&mut uuid_buf);
+                let hit = contains_ci(name, &text_needle)
+                    || contains_ci(description, &text_needle)
+                    || contains_ci(host, &text_needle)
+                    || contains_ci(uuid_text, &text_needle);
+                if !hit {
+                    return;
+                }
+            }
+            let meta = metadata.get(&object).copied();
+            let metadata_known = meta.is_some_and(|m| m.other_config_known);
+            if !self.tags.is_empty()
+                && !self.tags.iter().all(|tag| {
+                    meta.and_then(|m| m.tags.as_ref())
+                        .is_some_and(|tags| tags.contains(tag))
+                })
+            {
+                return;
+            }
+            if !self.folder.is_empty()
+                && !(metadata_known
+                    && meta
+                        .and_then(|m| m.folder.as_deref())
+                        .is_some_and(|f| folder_matches(f, &self.folder)))
+            {
+                return;
+            }
+            if !self.custom_fields.is_empty()
+                && !(metadata_known
+                    && meta.is_some_and(|m| {
+                        self.custom_fields
+                            .iter()
+                            .all(|(key, value)| m.custom_fields.get(key) == Some(value))
+                    }))
+            {
+                return;
+            }
+            rows.push(SearchResult {
                 pool: inventory.pool_id,
                 pool_name: inventory.pool_name.clone(),
                 object,
                 kind,
                 name: name.into(),
                 description: description.into(),
-                host,
-                power,
+                host: host.into(),
+                power: power.cloned(),
                 tags: meta.and_then(|m| m.tags.clone()),
                 folder: meta.and_then(|m| m.folder.clone()),
-                metadata_known: meta.is_some_and(|m| m.other_config_known),
+                metadata_known,
                 custom_fields: meta.map(|m| m.custom_fields.clone()).unwrap_or_default(),
-            };
-            if self.matches(&row) {
-                rows.push(row);
-            }
+            });
         };
-        add(
-            Id::Pool(inventory.pool_id),
-            SearchKind::Pool,
-            &inventory.pool_name,
-            "",
-            String::new(),
-            None,
-        );
-        for h in inventory.hosts.values() {
-            add(
-                Id::Host(h.id),
-                SearchKind::Host,
-                &h.name,
-                &h.version,
-                format!("{} {} {}", h.name, h.address, h.id),
+        if self.power.is_none() && want_kind(SearchKind::Pool) {
+            maybe_add(
+                Id::Pool(inventory.pool_id),
+                SearchKind::Pool,
+                &inventory.pool_name,
+                "",
+                "",
                 None,
             );
         }
-        for v in inventory.vms.values().filter(|v| !v.is_control_domain) {
-            let host = v
-                .host
-                .map(|id| {
-                    inventory
-                        .hosts
-                        .get(&id)
-                        .map(|h| format!("{} {} {}", h.name, h.address, h.id))
-                        .unwrap_or_else(|| id.to_string())
-                })
-                .unwrap_or_default();
-            add(
-                Id::Vm(v.id),
-                if v.is_template {
+        if self.power.is_none() && want_kind(SearchKind::Host) {
+            for h in inventory.hosts.values() {
+                let host = host_labels.get(&h.id).map(String::as_str).unwrap_or("");
+                maybe_add(
+                    Id::Host(h.id),
+                    SearchKind::Host,
+                    &h.name,
+                    &h.version,
+                    host,
+                    None,
+                );
+            }
+        }
+        if want_kind(SearchKind::Vm) || want_kind(SearchKind::Template) {
+            for v in inventory.vms.values().filter(|v| !v.is_control_domain) {
+                let kind = if v.is_template {
                     SearchKind::Template
                 } else {
                     SearchKind::Vm
-                },
-                &v.name,
-                &v.description,
-                host,
-                Some(v.power_state.clone()),
-            );
+                };
+                if !want_kind(kind) {
+                    continue;
+                }
+                let fallback_host;
+                let host = match v.host {
+                    Some(id) => match host_labels.get(&id) {
+                        Some(label) => label.as_str(),
+                        None => {
+                            fallback_host = id.to_string();
+                            fallback_host.as_str()
+                        }
+                    },
+                    None => "",
+                };
+                maybe_add(
+                    Id::Vm(v.id),
+                    kind,
+                    &v.name,
+                    &v.description,
+                    host,
+                    Some(&v.power_state),
+                );
+            }
         }
-        for v in inventory.snapshots.iter() {
-            add(
-                Id::Snapshot(v.id),
-                SearchKind::Snapshot,
-                &v.name,
-                &v.description,
-                String::new(),
-                Some(v.power_state.clone()),
-            );
+        if want_kind(SearchKind::Snapshot) {
+            for v in inventory.snapshots.iter() {
+                maybe_add(
+                    Id::Snapshot(v.id),
+                    SearchKind::Snapshot,
+                    &v.name,
+                    &v.description,
+                    "",
+                    Some(&v.power_state),
+                );
+            }
         }
-        for sr in &inventory.storage {
-            add(
-                Id::Storage(sr.uuid.into()),
-                SearchKind::Storage,
-                &sr.name,
-                &sr.kind,
-                String::new(),
-                None,
-            );
+        if self.power.is_none() && want_kind(SearchKind::Storage) {
+            for sr in &inventory.storage {
+                maybe_add(
+                    Id::Storage(sr.uuid.into()),
+                    SearchKind::Storage,
+                    &sr.name,
+                    &sr.kind,
+                    "",
+                    None,
+                );
+            }
         }
-        for n in &inventory.networks {
-            add(
-                Id::Network(n.uuid.into()),
-                SearchKind::Network,
-                &n.name,
-                &n.bridge,
-                String::new(),
-                None,
-            );
+        if self.power.is_none() && want_kind(SearchKind::Network) {
+            for n in &inventory.networks {
+                maybe_add(
+                    Id::Network(n.uuid.into()),
+                    SearchKind::Network,
+                    &n.name,
+                    &n.bridge,
+                    "",
+                    None,
+                );
+            }
         }
-        for d in inventory.details.vdis.values() {
-            add(
-                Id::Disk(d.id),
-                SearchKind::Disk,
-                &d.name,
-                &d.description,
-                String::new(),
-                None,
-            );
+        if self.power.is_none() && want_kind(SearchKind::Disk) {
+            for d in inventory.details.vdis.values() {
+                maybe_add(
+                    Id::Disk(d.id),
+                    SearchKind::Disk,
+                    &d.name,
+                    &d.description,
+                    "",
+                    None,
+                );
+            }
         }
         self.sort(&mut rows);
         Ok(rows)
@@ -481,5 +610,122 @@ mod tests {
             SearchCatalog::decode(br#"{"schema_version":1,"searches":[],"code":"no"}"#).is_err()
         );
         assert!(SearchCatalog::decode(b"<Search/>").is_err());
+    }
+    #[test]
+    fn run_filters_match_borrowed_predicates_including_unicode_uuid_and_metadata() {
+        let pool_id: PoolId = uuid::Uuid::from_u128(1).into();
+        let host_id: HostId = uuid::Uuid::from_u128(2).into();
+        let vm_id: crate::VmId = uuid::Uuid::from_u128(3).into();
+        let unicode_vm: crate::VmId = uuid::Uuid::from_u128(4).into();
+        let mut inventory = Inventory {
+            pool_id,
+            pool_name: "Cluster Alpha".into(),
+            coordinator: Some(host_id),
+            hosts: BTreeMap::from([(
+                host_id,
+                crate::Host {
+                    id: host_id,
+                    name: "node-01".into(),
+                    address: "10.0.0.1".into(),
+                    enabled: true,
+                    version: "8.3.0".into(),
+                },
+            )]),
+            vms: BTreeMap::from([
+                (
+                    vm_id,
+                    crate::Vm {
+                        id: vm_id,
+                        name: "App-Server".into(),
+                        description: "Primary".into(),
+                        power_state: PowerState::Running,
+                        host: Some(host_id),
+                        vcpus: 4,
+                        memory_bytes: 4 << 30,
+                        is_template: false,
+                        is_control_domain: false,
+                        allowed_actions: Vec::new(),
+                        can_snapshot: false,
+                    },
+                ),
+                (
+                    unicode_vm,
+                    crate::Vm {
+                        id: unicode_vm,
+                        name: "Ümlaut-Guest".into(),
+                        description: "Café".into(),
+                        power_state: PowerState::Halted,
+                        host: None,
+                        vcpus: 2,
+                        memory_bytes: 2 << 30,
+                        is_template: false,
+                        is_control_domain: false,
+                        allowed_actions: Vec::new(),
+                        can_snapshot: false,
+                    },
+                ),
+            ]),
+            snapshots: Default::default(),
+            storage: Vec::new(),
+            networks: Vec::new(),
+            details: Default::default(),
+            revision: 1,
+        };
+        inventory
+            .details
+            .organization
+            .objects
+            .push(crate::OrganizationObject {
+                id: Id::Vm(vm_id),
+                name: "App-Server".into(),
+                tags: Some(vec!["prod".into()]),
+                folder: Some("/Prod/Apps".into()),
+                other_config_known: true,
+                custom_fields: BTreeMap::from([("Team".into(), "Core".into())]),
+            });
+        let all = InventorySearch::default().run(&inventory).unwrap();
+        assert_eq!(all.len(), 4);
+        let by_unicode = InventorySearch {
+            text: "ümlaut".into(),
+            ..Default::default()
+        }
+        .run(&inventory)
+        .unwrap();
+        assert_eq!(by_unicode.len(), 1);
+        assert_eq!(by_unicode[0].object, Id::Vm(unicode_vm));
+        let by_uuid = InventorySearch {
+            text: vm_id.to_string().to_uppercase(),
+            ..Default::default()
+        }
+        .run(&inventory)
+        .unwrap();
+        assert_eq!(by_uuid.len(), 1);
+        assert_eq!(by_uuid[0].object, Id::Vm(vm_id));
+        let by_meta = InventorySearch {
+            host: "10.0.0.1".into(),
+            power: Some(PowerState::Running),
+            tags: BTreeSet::from(["prod".into()]),
+            folder: "/Prod".into(),
+            custom_fields: BTreeMap::from([("Team".into(), "Core".into())]),
+            ..Default::default()
+        }
+        .run(&inventory)
+        .unwrap();
+        assert_eq!(by_meta.len(), 1);
+        assert_eq!(by_meta[0].object, Id::Vm(vm_id));
+        for row in &all {
+            assert_eq!(
+                by_meta.iter().any(|m| m.object == row.object),
+                InventorySearch {
+                    host: "10.0.0.1".into(),
+                    power: Some(PowerState::Running),
+                    tags: BTreeSet::from(["prod".into()]),
+                    folder: "/Prod".into(),
+                    custom_fields: BTreeMap::from([("Team".into(), "Core".into())]),
+                    ..Default::default()
+                }
+                .matches(row)
+            );
+        }
     }
 }
