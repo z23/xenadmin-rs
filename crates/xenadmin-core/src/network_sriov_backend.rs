@@ -347,6 +347,46 @@ pub(crate) async fn vlan_identity(
 ) -> Result<(String, Value), Error> {
     let f = capacity_records(session).await?;
     let (_, o) = capacity_identity(&f, review.fabric.pool, review.object.id)?;
+    reviewed_parent(&f, &o, review)
+}
+
+/// What a result is checked against once a write has been made: the reviewed SR-IOV
+/// parent is the same object on the same hardware, both of its interfaces are attached,
+/// and it is in the reviewed mode with no reboot pending. Unlike [`vlan_uplink`] it asks
+/// for nothing that only a write needs (a disabled and evacuated host, pool HA off), so a
+/// result can still be checked after the host is back in service.
+pub(crate) async fn vlan_parent(
+    session: &Session,
+    review: &crate::SriovVlanUplink,
+) -> Result<(String, Value), Error> {
+    let f = capacity_records(session).await?;
+    let (_, o) = capacity_identity(&f, review.fabric.pool, review.object.id)?;
+    let parent = reviewed_parent(&f, &o, review)?;
+    let fabric = &f.inventory.details.network_fabric;
+    if o.requires_reboot != review.object.requires_reboot
+        || o.mode != review.object.mode
+        || o.attached != Some(true)
+        || f.inventory
+            .details
+            .pifs
+            .get(&o.physical)
+            .is_none_or(|p| p.currently_attached != Some(true))
+    {
+        return Err(Error::Protocol(
+            "The physical and logical SR-IOV interfaces must already be attached with a known mode and no pending reboot",
+        ));
+    }
+    if fabric.pci_devices.get(&o.pci) != review.fabric.hardware.as_ref() {
+        return Err(Error::ResourceConflict);
+    }
+    Ok(parent)
+}
+
+fn reviewed_parent(
+    f: &Fresh,
+    o: &crate::SriovCapacity,
+    review: &crate::SriovVlanUplink,
+) -> Result<(String, Value), Error> {
     if Some(o.logical) != review.object.logical
         || Some(o.physical) != review.object.physical
         || o.host != review.fabric.host

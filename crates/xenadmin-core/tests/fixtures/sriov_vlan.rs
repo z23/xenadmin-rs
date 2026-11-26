@@ -383,6 +383,61 @@ async fn logical_sriov_vlan_restart_uses_saved_completion_without_replaying_rema
     assert_eq!(row.topology_changes.created_vlans.len(), 1);
 }
 
+#[tokio::test]
+async fn logical_sriov_vlan_result_is_checked_after_its_hosts_are_back_in_service() {
+    // A write needs a disabled host. Reading what a write left behind does not: the
+    // first host's VLAN is verified although both hosts have been enabled again.
+    let (mock, s) = fixture(false, Fault::None).await;
+    install(&mut s.lock().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &b).await;
+    let op = reviewed(&c, false);
+    s.lock()
+        .unwrap()
+        .records
+        .insert("_reboot_after_write".into(), json!(true));
+    let r = finish(&submit(&c, op)).await;
+    assert_eq!(r.state, OperationState::OutcomeUnknown);
+    assert_eq!(r.topology_changes.created_vlans.len(), 1);
+    c.close().await;
+    {
+        let mut s = s.lock().unwrap();
+        s.records.remove("_reboot_after_write");
+        s.records.get_mut(&reference("network_sriov", 92)).unwrap()["requires_reboot"] =
+            json!(false);
+        for h in [2, 3] {
+            s.records.get_mut(&reference("host", h)).unwrap()["enabled"] = json!(true);
+        }
+        s.records.retain(|k, _| !k.starts_with("OpaqueRef:task:"));
+    }
+    let recovered = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &recovered).await;
+    c.control_resource(r.id, OperationControl::Recheck).unwrap();
+    let row = tokio::time::timeout(deadline(5), async {
+        loop {
+            if let Some(row) = c
+                .resource_history()
+                .iter()
+                .find(|row| row.id == r.id && row.state.terminal())
+            {
+                break row.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        row.state,
+        OperationState::PartiallyCompleted,
+        "{}",
+        row.detail
+    );
+    assert_eq!(s.lock().unwrap().writes, 1);
+    assert_eq!(row.topology_changes.created_vlans.len(), 1);
+}
+
 fn retained(s: &mut Control) {
     let mut n = s.records[&reference("network", 5)].clone();
     n["uuid"] = json!(id(8));

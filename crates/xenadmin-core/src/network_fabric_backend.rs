@@ -1,6 +1,6 @@
 #[path = "network_sriov_backend.rs"]
 mod sriov;
-pub(crate) use sriov::{capacity, vlan_identity, vlan_uplink};
+pub(crate) use sriov::{capacity, vlan_identity, vlan_parent, vlan_uplink};
 #[path = "network_fabric_pool_backend.rs"]
 pub(super) mod pool;
 use super::{network, xapi};
