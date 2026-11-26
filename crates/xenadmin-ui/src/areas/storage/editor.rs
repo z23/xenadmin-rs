@@ -33,8 +33,8 @@ use crate::prelude::*;
 /// confirmed.
 pub const STALE: &str = "The connection changed; reopen this dialog before reviewing.";
 
-/// The seven backends, by the number the Rune editor gave them.
-pub const KINDS: [(u8, &str); 7] = [
+/// The nine backends, by the number the Rune editor gave them.
+pub const KINDS: [(u8, &str); 9] = [
     (0, "NFS virtual disks"),
     (1, "ISO library over NFS"),
     (2, "LVM over iSCSI"),
@@ -42,6 +42,8 @@ pub const KINDS: [(u8, &str); 7] = [
     (4, "LVM over HBA / Fibre Channel"),
     (5, "Local EXT"),
     (6, "Local LVM"),
+    (7, "Local XFS"),
+    (8, "SMB 3.0 virtual disks"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,6 +89,7 @@ pub struct Editor {
     pub(super) hba_device: Option<(HostId, DiscoveredHbaDevice)>,
     pub(super) declaration: String,
     pub(super) local_acknowledged: bool,
+    pub(super) local_introduction: Option<(u8, String)>,
     pub(super) local_probe: Option<(HostId, String, bool)>,
     pub(super) version: NfsVersion,
     pub(super) host: Option<HostId>,
@@ -174,6 +177,7 @@ pub(super) fn open(m: &mut Model, pool: PoolId, sr: Option<SrId>) -> bool {
         hba_device: None,
         declaration: String::new(),
         local_acknowledged: false,
+        local_introduction: None,
         local_probe: None,
         version: NfsVersion::Automatic,
         host: inventory.hosts.keys().next().copied(),
@@ -191,7 +195,15 @@ pub(super) fn open(m: &mut Model, pool: PoolId, sr: Option<SrId>) -> bool {
 }
 
 pub(super) fn is_local(e: &Editor) -> bool {
-    matches!(e.kind, 5 | 6)
+    matches!(e.kind, 5..=7)
+}
+
+pub(super) fn local_kind_index(kind: LocalStorageKind) -> u8 {
+    match kind {
+        LocalStorageKind::Ext => 5,
+        LocalStorageKind::Lvm => 6,
+        LocalStorageKind::Xfs => 7,
+    }
 }
 
 pub(super) fn location(editor: &Editor) -> StorageLocation {
@@ -201,13 +213,19 @@ pub(super) fn location(editor: &Editor) -> StorageLocation {
         editor.allocation
     };
     match editor.kind {
-        5 | 6 => StorageLocation::Local {
+        5..=7 => StorageLocation::Local {
             kind: if editor.kind == 5 {
                 LocalStorageKind::Ext
-            } else {
+            } else if editor.kind == 6 {
                 LocalStorageKind::Lvm
+            } else {
+                LocalStorageKind::Xfs
             },
             device: editor.path.trim().into(),
+        },
+        8 => StorageLocation::Smb {
+            server: editor.server.trim().into(),
+            share: editor.share.trim().into(),
         },
         4 => StorageLocation::Hba {
             scsi_id: editor.scsi.trim().into(),
@@ -346,7 +364,7 @@ pub(super) fn query(m: &mut Model, step: u8) {
         let connection = m
             .connection_for(e.pool)
             .ok_or("Connect before discovery")?;
-        let handle = if step != 0 && e.authenticate && matches!(e.kind, 2 | 3) {
+        let handle = if step != 0 && e.authenticate && matches!(e.kind, 2 | 3 | 8) {
             connection.discover_authenticated_storage(
                 observed,
                 query,
@@ -441,11 +459,7 @@ pub(super) fn select_result(m: &mut Model, index: usize) {
     match &e.discovered {
         Some(StorageDiscoveryResult::LocalRepositories(rows)) => {
             if let Some(row) = rows.get(index) {
-                e.kind = if row.kind == LocalStorageKind::Ext {
-                    5
-                } else {
-                    6
-                };
+                e.local_introduction = None;
                 e.uuid = row.repository.uuid.to_string();
                 e.mode = Mode::Introduce;
             }
@@ -497,11 +511,12 @@ pub(super) fn set_kind(m: &mut Model, kind: u8) {
         return;
     };
     if e.kind != kind {
-        if matches!(kind, 5 | 6) && !is_local(e) {
+        if matches!(kind, 5..=7) && !is_local(e) {
             e.path = String::new();
         }
         e.local_probe = None;
         e.local_acknowledged = false;
+        e.local_introduction = None;
         e.kind = kind;
         e.hba_device = None;
         e.scsi = String::new();
@@ -529,7 +544,12 @@ pub(super) fn credentials(e: &Editor) -> Option<StorageCredentials> {
     if e.username.is_empty() || e.password.is_empty() {
         return None;
     }
-    if e.kind == 3 {
+    if e.kind == 8 {
+        Some(StorageCredentials::smb_disks(
+            e.username.clone(),
+            e.password.expose().to_owned(),
+        ))
+    } else if e.kind == 3 {
         Some(StorageCredentials::smb(
             e.username.clone(),
             e.password.expose().to_owned(),
@@ -557,7 +577,20 @@ pub(super) fn credentials(e: &Editor) -> Option<StorageCredentials> {
 /// The operator's declaration for formatting a local device (from
 /// `storage_local_view.rs`). `Ok(None)`: not a local creation.
 pub(super) fn capture(e: &Editor) -> Result<Option<LocalDeviceDeclaration>, String> {
-    if !is_local(e) || e.mode != Mode::Create {
+    if !is_local(e) {
+        return Ok(None);
+    }
+    if e.mode == Mode::Introduce {
+        if !e
+            .local_introduction
+            .as_ref()
+            .is_some_and(|(kind, uuid)| *kind == e.kind && uuid == e.uuid.trim())
+        {
+            return Err("Verify the existing repository's driver independently and confirm your selected driver before introduction. EXT and XFS probes cannot identify its filesystem.".into());
+        }
+        return Ok(None);
+    }
+    if e.mode != Mode::Create {
         return Ok(None);
     }
     if !e
@@ -565,7 +598,7 @@ pub(super) fn capture(e: &Editor) -> Result<Option<LocalDeviceDeclaration>, Stri
         .as_ref()
         .is_some_and(|(host, path, empty)| Some(*host) == e.host && path == e.path.trim() && *empty)
     {
-        return Err("Probe the exact host and device for EXT and LVM repositories before reviewing a format. Known repositories must be introduced instead.".into());
+        return Err("Probe the exact host and device for EXT, LVM and advertised XFS repositories before reviewing a format. Known repositories must be introduced instead.".into());
     }
     if !e.local_acknowledged
         || e.declaration.trim().is_empty()
@@ -684,7 +717,7 @@ pub(super) fn stage(m: &mut Model, target: ResourceTarget, operation: StorageOpe
             return;
         }
         let auth = editor.authenticate
-            && matches!(editor.kind, 2 | 3)
+            && matches!(editor.kind, 2 | 3 | 8)
             && matches!(
                 operation,
                 StorageOperation::Create { .. } | StorageOperation::CreateAttachment { .. }
@@ -697,7 +730,7 @@ pub(super) fn stage(m: &mut Model, target: ResourceTarget, operation: StorageOpe
         editor.review_auth_label = auth.then(|| {
             format!(
                 "{} authentication as {}",
-                if editor.kind == 3 {
+                if matches!(editor.kind, 3 | 8) {
                     "SMB 3.0"
                 } else if editor.mutual {
                     "Mutual CHAP"
@@ -1061,8 +1094,14 @@ pub(super) fn new_attachment(m: &mut Model) {
         });
         editor.allocation = template.allocation();
         match template {
+            StorageLocation::Smb { server, share } => {
+                editor.kind = 8;
+                editor.server = server;
+                editor.share = share;
+                editor.path = String::new();
+            }
             StorageLocation::Local { kind, device } => {
-                editor.kind = if kind == LocalStorageKind::Ext { 5 } else { 6 };
+                editor.kind = local_kind_index(kind);
                 editor.path = device;
             }
             StorageLocation::Hba { scsi_id, .. } => {
@@ -1243,6 +1282,11 @@ pub fn review_restore(m: &mut Model, pool: PoolId, sr: SrId, pbd: PbdId, host: H
 /// storage workflow and the repair review of `storage_maintenance`.
 pub fn location_lines(location: &StorageLocation) -> Vec<String> {
     match location {
+        StorageLocation::Smb { server, share } => vec![
+            "Backend: SMB 3.0 virtual disks".into(),
+            format!("Share root: //{server}/{share}"),
+            "Shared VHD storage; driver enforces SMB 3.0".into(),
+        ],
         StorageLocation::Local { kind, device } => vec![
             format!("Backend: {}", kind.label()),
             format!("Operator-selected device path: {device}"),
@@ -1334,7 +1378,7 @@ pub(super) fn describe(operation: &StorageOperation) -> Vec<String> {
                 lines.extend([
                     format!("Operator identity declaration (not verified by the server): {}", declaration.identity_statement),
                     "The API does not fully verify device identity, capacity, partitions, signatures or use. Empty probes and unmatched aliases do not prove the disk is safe to format. The host driver may refuse the operation; partial formatting may remain after failure.".into(),
-                    "Known EXT/LVM repositories and known current attachments are refused. No existing repository is automatically forgotten or destroyed.".into(),
+                    "Known EXT/LVM/XFS repositories and known current attachments are refused. No existing repository is automatically forgotten or destroyed.".into(),
                 ]);
             }
             if matches!(
@@ -1366,6 +1410,9 @@ pub(super) fn describe(operation: &StorageOperation) -> Vec<String> {
             ]);
             lines.extend(location_lines(location));
             lines.push("Registers existing data without formatting it. Create and plug host attachments separately after this completes.".into());
+            if matches!(location, StorageLocation::Local { .. }) {
+                lines.push("The selected driver is your independently verified choice. EXT and XFS probes share a volume-group prefix and cannot establish the filesystem type.".into());
+            }
         }
         StorageOperation::CreateAttachment { host, location } => {
             lines.push(format!("Host: {host}"));

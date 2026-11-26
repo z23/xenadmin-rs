@@ -438,6 +438,10 @@ pub(crate) fn validate_credentials(
             location: StorageLocation::IsoSmb { .. },
             ..
         } => credentials.authentication == crate::StorageAuthentication::Smb,
+        StorageQuery::Probe {
+            location: StorageLocation::Smb { .. },
+            ..
+        } => credentials.authentication == crate::StorageAuthentication::SmbDisk,
         _ => false,
     };
     if valid {

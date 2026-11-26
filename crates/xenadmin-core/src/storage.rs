@@ -49,6 +49,10 @@ impl StorageAllocation {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageLocation {
+    Smb {
+        server: String,
+        share: String,
+    },
     Local {
         kind: crate::LocalStorageKind,
         device: String,
@@ -109,6 +113,15 @@ pub(crate) fn storage_token(value: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
 }
+fn smb_share(server: &str, share: &str) -> bool {
+    storage_server(server)
+        && !share.is_empty()
+        && share.len() <= 255
+        && !share
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ',' | '@'))
+        && !matches!(share, "." | "..")
+}
 impl StorageLocation {
     pub fn shared(&self) -> bool {
         !matches!(self, Self::Local { .. })
@@ -122,6 +135,7 @@ impl StorageLocation {
 
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Smb { .. } => "smb",
             Self::Local { kind, .. } => kind.kind(),
             Self::Nfs { .. } => "nfs",
             Self::IsoNfs { .. } | Self::IsoSmb { .. } => "iso",
@@ -142,6 +156,7 @@ impl StorageLocation {
             |s: &str| s.starts_with('/') && s.len() <= 4096 && !s.chars().any(char::is_control);
         let token = storage_token;
         match self {
+            Self::Smb { server, share } => smb_share(server, share),
             Self::Local { device, .. } => crate::storage_local::valid_path(device),
             Self::Hba { scsi_id, .. } => token(scsi_id),
             Self::IsoSmb {
@@ -149,13 +164,7 @@ impl StorageLocation {
                 share,
                 path,
             } => {
-                host(server)
-                    && !share.is_empty()
-                    && share.len() <= 255
-                    && !share
-                        .chars()
-                        .any(|c| c.is_control() || matches!(c, '/' | '\\' | ',' | '@'))
-                    && !matches!(share.as_str(), "." | "..")
+                smb_share(server, share)
                     && path.len() <= 4096
                     && !path.starts_with('/')
                     && !path.ends_with('/')
@@ -191,6 +200,7 @@ impl StorageLocation {
     pub(crate) fn device_config(&self) -> serde_json::Value {
         use serde_json::json;
         let mut config = match self {
+            Self::Smb { server, share } => json!({"server":format!("//{server}/{share}")}),
             Self::Local { device, .. } => json!({"device":device}),
             Self::Hba { scsi_id, .. } => json!({"SCSIid":scsi_id}),
             Self::IsoSmb {
@@ -426,17 +436,20 @@ pub(crate) fn safe_location_for_kind<'a>(
     kind: Option<&str>,
 ) -> Option<StorageLocation> {
     let config = config.raw();
-    let kind = match kind {
+    let local_kind = match kind {
         Some("ext") => Some(crate::LocalStorageKind::Ext),
         Some("lvm") => Some(crate::LocalStorageKind::Lvm),
+        Some("xfs") => Some(crate::LocalStorageKind::Xfs),
         _ => None,
     };
-    if let Some(kind) = kind {
+    if let Some(kind) = local_kind {
         let device = config["device"].as_str()?.to_owned();
         return crate::storage_local::valid_path(&device)
             .then_some(StorageLocation::Local { kind, device });
     }
-    safe_location_from_config(config)
+    let location = safe_location_from_config(config)?;
+    kind.is_none_or(|kind| kind == location.kind())
+        .then_some(location)
 }
 pub(crate) fn safe_location_from_config<'a>(
     config: impl Reads<'a, kind::Map>,
@@ -489,6 +502,17 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
             server: server.into(),
             share: share.into(),
             path: path.into(),
+        }
+    } else if config["server"]
+        .as_str()
+        .is_some_and(|v| v.starts_with("//"))
+        && config.get("serverpath").is_none()
+    {
+        let server = text("server")?;
+        let (server, share) = server.strip_prefix("//")?.split_once('/')?;
+        StorageLocation::Smb {
+            server: server.into(),
+            share: share.into(),
         }
     } else if let (Some(server), Some(path)) = (text("server"), text("serverpath")) {
         StorageLocation::Nfs {
@@ -610,6 +634,47 @@ mod tests {
         assert!(safe_location_from_config(&legacy).is_none());
         legacy.as_object_mut().unwrap().remove("vers");
         assert!(safe_location_from_config(&legacy).is_none());
+    }
+    #[test]
+    fn smb_disk_location_keeps_root_share_and_driver_identity_without_credentials() {
+        let location = StorageLocation::Smb {
+            server: "smb.example.test".into(),
+            share: "disks".into(),
+        };
+        assert!(location.validate());
+        assert!(location.shared());
+        assert_eq!(location.kind(), "smb");
+        assert_eq!(location.content_type(), "user");
+        assert_eq!(
+            location_from_config(&location.device_config()),
+            Some(location.clone())
+        );
+        let config = json!({"server":"//smb.example.test/disks","username":"DOMAIN\\private","password_secret":"private-uuid"});
+        assert!(requires_credentials(&config));
+        assert!(location_from_config(&config).is_none());
+        assert_eq!(safe_location_for_kind(&config, Some("smb")), Some(location));
+        assert!(safe_location_for_kind(&config, Some("nfs")).is_none());
+        for value in [
+            "//smb.example.test/disks/subdir",
+            "//smb.example.test/disks/",
+            "//smb.example.test/..",
+            "//user@smb.example.test/disks",
+        ] {
+            assert!(
+                location_from_config(&json!({"server":value})).is_none(),
+                "{value}"
+            );
+        }
+        assert!(matches!(
+            safe_location_for_kind(
+                &json!({"device":"/dev/disk/by-id/ata-FIXTURE"}),
+                Some("xfs")
+            ),
+            Some(StorageLocation::Local {
+                kind: crate::LocalStorageKind::Xfs,
+                ..
+            })
+        ));
     }
     #[test]
     fn attachment_projection_never_copies_authentication_material() {

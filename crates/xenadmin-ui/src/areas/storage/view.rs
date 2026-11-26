@@ -444,7 +444,16 @@ fn location_fields(m: &Model, e: &Editor) -> Vec<Block> {
         .disabled_if(synthetic, NO_DISCOVERY)
     };
     let backend = match e.kind {
-        5 | 6 => local_fields(e),
+        5..=7 => local_fields(e),
+        8 => blocks![
+            input(
+                "storage-smb-share",
+                "SMB share name",
+                &e.share,
+                edit(|e, text| e.share = text.to_owned())
+            )
+            .help("Root share name only; subdirectories are not used by the SMB disk driver"),
+        ],
         4 => blocks![
             caption(if e.scsi.is_empty() {
                 "Discover HBA devices on the selected host, then select a LUN.".into()
@@ -536,12 +545,12 @@ fn location_fields(m: &Model, e: &Editor) -> Vec<Block> {
             discover(4, "Discover LUNs for selected IQN"),
         ],
         4 => vec![discover(5, "Discover HBA devices")],
-        3 | 5 | 6 => Vec::new(),
+        3 | 5..=8 => Vec::new(),
         _ => vec![discover(2, "Discover NFS exports")],
     };
     let local = editor::is_local(e);
     blocks![
-        (!matches!(e.kind, 4..=6)).then(|| {
+        (!matches!(e.kind, 4..=7)).then(|| {
             input(
                 "storage-server",
                 "Server / iSCSI portal",
@@ -557,7 +566,7 @@ fn location_fields(m: &Model, e: &Editor) -> Vec<Block> {
         actions([button(
             "storage-probe",
             if local {
-                "Probe this device for EXT and LVM repositories"
+                "Probe this device for EXT, LVM and XFS repositories"
             } else {
                 "Probe selected location for existing repositories"
             },
@@ -627,12 +636,34 @@ fn local_fields(e: &Editor) -> Vec<Block> {
                 change(|e| e.local_acknowledged = !e.local_acknowledged)
             ),
         ]),
+        (e.mode == Mode::Introduce).then(|| {
+            let confirmed = e
+                .local_introduction
+                .as_ref()
+                .is_some_and(|(kind, uuid)| *kind == e.kind && uuid == e.uuid.trim());
+            blocks![
+                caption("EXT and XFS probes inspect the same volume-group prefix. A result does not establish filesystem type. Choose the backend you independently verified for this exact repository UUID."),
+                checkbox(
+                    "storage-local-driver-confirm",
+                    "I independently verified this repository's selected driver",
+                    confirmed,
+                    change(|e| {
+                        let selected = (e.kind, e.uuid.trim().to_owned());
+                        e.local_introduction = if e.local_introduction.as_ref() == Some(&selected) {
+                            None
+                        } else {
+                            Some(selected)
+                        };
+                    })
+                ),
+            ]
+        }),
         e.local_probe
             .as_ref()
             .filter(|(host, path, _)| Some(*host) == e.host && path == e.path.trim())
             .map(|(_, _, empty)| {
                 caption(if *empty {
-                    "The EXT/LVM probe returned no known repository. This does not establish device safety."
+                    "The local-storage probe returned no known repository. This does not establish device safety."
                 } else {
                     "The probe found existing storage. Select it to introduce it; formatting is refused."
                 })
@@ -681,7 +712,7 @@ fn allocation_choice(e: &Editor) -> Vec<Block> {
 /// Every edit or toggle here moves `auth_epoch`, so a discovery made with
 /// other credentials is refused.
 fn credential_fields(e: &Editor) -> Vec<Block> {
-    if !matches!(e.kind, 2 | 3) {
+    if !matches!(e.kind, 2 | 3 | 8) {
         return Vec::new();
     }
     blocks![
@@ -713,7 +744,7 @@ fn credential_fields(e: &Editor) -> Vec<Block> {
                     e.username = text.to_owned();
                 })
             )
-            .help(if e.kind == 3 {
+            .help(if matches!(e.kind, 3 | 8) {
                 "SMB username (DOMAIN\\user if needed)"
             } else {
                 "CHAP username"
@@ -837,8 +868,12 @@ fn discovery_results(m: &Model, e: &Editor) -> Vec<Block> {
             rows.iter()
                 .map(|r| {
                     format!(
-                        "{} · {}\n{}",
-                        r.kind.label(),
+                        "Reported by {} · {}\n{} · driver must be independently verified",
+                        r.probe_kinds
+                            .iter()
+                            .map(|k| k.label())
+                            .collect::<Vec<_>>()
+                            .join(" / "),
                         r.repository.name,
                         r.repository.uuid
                     )
@@ -896,7 +931,7 @@ fn discovery_results(m: &Model, e: &Editor) -> Vec<Block> {
     };
     let empty = rows.is_empty().then(|| {
         caption(if matches!(result, StorageDiscoveryResult::LocalRepositories(_)) {
-            "Neither EXT nor LVM reported a known repository. This is NOT proof that the device is valid, blank or unused. Return to the form to review your device declaration."
+            "The available EXT, LVM and XFS probes reported no known repository. This is NOT proof that the device is valid, blank or unused. Return to the form to review your device declaration."
         } else if matches!(result, StorageDiscoveryResult::HbaDevices(_)) {
             "The backend reported no eligible HBA devices. Check zoning, host visibility and existing storage use, then discover again."
         } else {

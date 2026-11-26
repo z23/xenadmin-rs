@@ -379,7 +379,7 @@ fn local_known_repository_selection_chooses_nonformatting_introduction() {
     e.query_inputs = Some(editor::inputs(e));
     e.discovered = Some(StorageDiscoveryResult::LocalRepositories(vec![
         DiscoveredLocalRepository {
-            kind: LocalStorageKind::Lvm,
+            probe_kinds: vec![LocalStorageKind::Lvm],
             repository: DiscoveredRepository {
                 uuid: SrId::from(Uuid::from_u128(701)),
                 name: "Existing local".into(),
@@ -390,8 +390,13 @@ fn local_known_repository_selection_chooses_nonformatting_introduction() {
     h.click("storage-result-0");
     let e = editor(&h);
     assert!(e.mode == Mode::Introduce);
-    assert_eq!(e.kind, 6);
+    assert_eq!(e.kind, 5);
     assert!(e.review.is_none());
+    editor::review(&mut h.model);
+    assert!(editor(&h).review.is_none());
+    let e = editor_mut(&mut h);
+    e.kind = 6;
+    e.local_introduction = Some((e.kind, e.uuid.trim().into()));
     editor::review(&mut h.model);
     assert!(matches!(
         reviewed(&h),
@@ -404,6 +409,74 @@ fn local_known_repository_selection_chooses_nonformatting_introduction() {
         }
     ));
     assert!(h.model.resource_operations.is_empty());
+}
+
+#[test]
+fn ambiguous_local_probe_never_chooses_a_driver_and_confirmation_binds_kind_and_uuid() {
+    let mut h = Harness::scene("storage-local");
+    let e = editor_mut(&mut h);
+    e.query_inputs = Some(editor::inputs(e));
+    e.discovered = Some(StorageDiscoveryResult::LocalRepositories(vec![
+        DiscoveredLocalRepository {
+            probe_kinds: vec![LocalStorageKind::Ext, LocalStorageKind::Xfs],
+            repository: DiscoveredRepository {
+                uuid: SrId::from(Uuid::from_u128(702)),
+                name: "Existing shared-prefix repository".into(),
+                size_bytes: Some(4096),
+            },
+        },
+    ]));
+    h.click("storage-result-0");
+    assert_eq!(editor(&h).kind, 5);
+    h.click("storage-review");
+    assert!(editor(&h).review.is_none());
+    editor::set_kind(&mut h.model, 7);
+    h.click("storage-local-driver-confirm");
+    h.type_text("storage-uuid", &Uuid::from_u128(703).to_string());
+    h.click("storage-review");
+    assert!(editor(&h).review.is_none());
+    h.click("storage-local-driver-confirm");
+    h.click("storage-review");
+    assert!(matches!(
+        reviewed(&h),
+        StorageOperation::Introduce {
+            uuid,
+            location: StorageLocation::Local {
+                kind: LocalStorageKind::Xfs,
+                ..
+            },
+            ..
+        } if *uuid == SrId::from(Uuid::from_u128(703))
+    ));
+    assert!(
+        editor::describe(reviewed(&h))
+            .join(" ")
+            .contains("independently verified choice")
+    );
+    assert!(h.model.resource_operations.is_empty());
+}
+
+#[test]
+fn smb_virtual_disk_review_uses_smb_disk_credentials_and_root_share() {
+    let mut h = Harness::scene("storage-create");
+    editor::set_kind(&mut h.model, 8);
+    h.type_text("storage-server", "smb.example.test");
+    h.type_text("storage-smb-share", "disks");
+    h.click("storage-auth");
+    h.type_text("storage-username", "LAB\\storage");
+    h.type_text("storage-password", "synthetic-only-password");
+    h.click("storage-review");
+    assert!(matches!(
+        reviewed(&h),
+        StorageOperation::Create {
+            location: StorageLocation::Smb { server, share },
+            ..
+        } if server == "smb.example.test" && share == "disks"
+    ));
+    assert_eq!(
+        editor(&h).review_auth_label.as_deref(),
+        Some("SMB 3.0 authentication as LAB\\storage")
+    );
 }
 
 /// Rune `storage_local_view.rs`. The GPUI half: the two controls inside

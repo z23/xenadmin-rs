@@ -32,6 +32,11 @@ fn location(auth: StorageAuthentication) -> StorageLocation {
             share: "images".into(),
             path: "install".into(),
         }
+    } else if auth == StorageAuthentication::SmbDisk {
+        StorageLocation::Smb {
+            server: "smb.example.test".into(),
+            share: "disks".into(),
+        }
     } else {
         StorageLocation::Iscsi {
             portal: "iscsi.example.test".into(),
@@ -52,6 +57,9 @@ fn credentials(auth: StorageAuthentication) -> StorageCredentials {
             "private-incoming-password".into(),
         ),
         StorageAuthentication::Smb => StorageCredentials::smb(USERNAME.into(), PASSWORD.into()),
+        StorageAuthentication::SmbDisk => {
+            StorageCredentials::smb_disks(USERNAME.into(), PASSWORD.into())
+        }
     }
 }
 async fn fixture(auth: StorageAuthentication, fault: Fault) -> (Mock, Records) {
@@ -64,6 +72,8 @@ async fn fixture_delayed(
 ) -> (Mock, Records) {
     let kind = if auth == StorageAuthentication::Smb {
         "iso"
+    } else if auth == StorageAuthentication::SmbDisk {
+        "smb"
     } else {
         "lvmoiscsi"
     };
@@ -144,8 +154,9 @@ async fn fixture_delayed(
         }
         if ["Async.SR.create","Async.PBD.create"].contains(&method){
             let mut config=if method=="Async.SR.create"{p[2].clone()}else{p[1]["device_config"].clone()};
-            assert!(!config.to_string().contains(PASSWORD));assert_eq!(config[if auth==StorageAuthentication::Smb{"username"}else{"chapuser"}],USERNAME);
+            assert!(!config.to_string().contains(PASSWORD));assert_eq!(config[if matches!(auth, StorageAuthentication::Smb | StorageAuthentication::SmbDisk){"username"}else{"chapuser"}],USERNAME);
             if auth==StorageAuthentication::Smb{assert_eq!(config["vers"],"3.0");assert_eq!(config["type"],"cifs");assert_eq!(config["location"],"//smb.example.test/images/install");}
+            else if auth==StorageAuthentication::SmbDisk {assert_eq!(config["server"],"//smb.example.test/disks");assert!(config.get("password_secret").is_some());for key in ["cifspassword_secret", "password", "vers", "type", "location"]{assert!(config.get(key).is_none(),"unexpected SMB disk key: {key}");}}
             else{assert_eq!(config["port"],"3261");assert!(config.get("chappassword").is_none());}
             let mut m=data.lock().unwrap();
             for key in config.as_object().unwrap().keys().filter(|k|k.ends_with("password_secret")).cloned().collect::<Vec<_>>(){
@@ -164,6 +175,10 @@ async fn fixture_delayed(
             return Some(if fault==Fault::LostProvision{RpcReply::Drop}else{RpcReply::Json(json!({"result":"OpaqueRef:storage-auth-task"}))});
         }
         if method=="task.get_record"{return Some(RpcReply::Json(json!({"result":{"uuid":data.lock().unwrap().get("fixture-task-uuid").cloned().unwrap_or(json!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),"status":if fault==Fault::FailedProvision{"failure"}else{"success"},"result":format!("<value>{}</value>",task_result.lock().unwrap()),"error_info":["SR_BACKEND_FAILURE_1",PASSWORD]}})));}
+        if method=="SR.probe" && auth==StorageAuthentication::SmbDisk {
+            assert_eq!(p[3],"smb");assert_eq!(p[2],json!({"server":"//smb.example.test/disks","username":USERNAME,"password":PASSWORD}));
+            return Some(RpcReply::Json(json!({"result":format!("<SRlist><SR><UUID>{NEW_SR}</UUID></SR></SRlist>")})));
+        }
         if method=="SR.probe"{assert_eq!(p[2]["chapuser"],USERNAME);assert_eq!(p[2]["chappassword"],PASSWORD);return Some(RpcReply::Json(json!({"error":{"message":"SR_BACKEND_FAILURE_96","data":["private", "", "<iscsi-target-iqns><TGT><IPAddress>192.0.2.20</IPAddress><Port>3261</Port><TargetIQN>iqn.2026-01.example:fixture</TargetIQN></TGT></iscsi-target-iqns>"]}})));}
         None
     }})).await;
@@ -253,6 +268,7 @@ async fn authenticated_storage_provisions_secret_copies_and_cleans_only_owned_bo
         StorageAuthentication::Chap,
         StorageAuthentication::MutualChap,
         StorageAuthentication::Smb,
+        StorageAuthentication::SmbDisk,
     ] {
         for attachment in [false, true] {
             let (mock, data) = fixture(auth, Fault::None).await;
@@ -296,44 +312,46 @@ async fn authenticated_storage_provisions_secret_copies_and_cleans_only_owned_bo
 }
 #[tokio::test]
 async fn uncertain_auth_storage_keeps_secret_evidence_and_never_cleans_potential_consumers() {
-    for fault in [
-        Fault::LostSecret,
-        Fault::LostProvision,
-        Fault::FailedProvision,
-        Fault::LostCleanup,
-        Fault::Consumer,
-        Fault::BootstrapCopy,
-        Fault::WrongHost,
-        Fault::ChangedAttachmentRead,
-    ] {
-        let (mock, data) = fixture(StorageAuthentication::Chap, fault).await;
-        let dir = tempfile::tempdir().unwrap();
-        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
-        let c = connect(&mock, &backend, false).await;
-        let op = c
-            .submit_authenticated_storage(
-                OperationId::new(),
-                c.latest().observe_resource(pool()).unwrap(),
-                command(StorageAuthentication::Chap, false),
-                credentials(StorageAuthentication::Chap),
-            )
-            .unwrap();
-        let r = finished(&op).await;
-        assert_eq!(
-            r.state,
-            if fault == Fault::Consumer {
-                OperationState::PartiallyCompleted
-            } else {
-                OperationState::OutcomeUnknown
-            },
-            "{fault:?}: {}",
-            r.detail
-        );
-        privacy(&r, dir.path());
-        if fault != Fault::LostCleanup {
-            assert!(data.lock().unwrap().keys().any(|k| k == "secret-100"));
+    for auth in [StorageAuthentication::Chap, StorageAuthentication::SmbDisk] {
+        for fault in [
+            Fault::LostSecret,
+            Fault::LostProvision,
+            Fault::FailedProvision,
+            Fault::LostCleanup,
+            Fault::Consumer,
+            Fault::BootstrapCopy,
+            Fault::WrongHost,
+            Fault::ChangedAttachmentRead,
+        ] {
+            let (mock, data) = fixture(auth, fault).await;
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+            let c = connect(&mock, &backend, false).await;
+            let op = c
+                .submit_authenticated_storage(
+                    OperationId::new(),
+                    c.latest().observe_resource(pool()).unwrap(),
+                    command(auth, false),
+                    credentials(auth),
+                )
+                .unwrap();
+            let r = finished(&op).await;
+            assert_eq!(
+                r.state,
+                if fault == Fault::Consumer {
+                    OperationState::PartiallyCompleted
+                } else {
+                    OperationState::OutcomeUnknown
+                },
+                "{fault:?}: {}",
+                r.detail
+            );
+            privacy(&r, dir.path());
+            if fault != Fault::LostCleanup {
+                assert!(data.lock().unwrap().keys().any(|k| k == "secret-100"));
+            }
+            c.disconnect();
         }
-        c.disconnect();
     }
 }
 #[tokio::test]
@@ -745,6 +763,7 @@ async fn storage_cleanup_permission_denial_prevents_temporary_secret_creation() 
         StorageAuthentication::Chap,
         StorageAuthentication::MutualChap,
         StorageAuthentication::Smb,
+        StorageAuthentication::SmbDisk,
     ] {
         let (mock, data) = fixture(auth, Fault::None).await;
         data.lock().unwrap().insert(
@@ -844,4 +863,58 @@ async fn cleanup_keeps_a_storage_secret_for_every_id_spelling() {
             "spelling=other state=Succeeded destroy=1 secret_present=false detail=Reviewed unused temporary Secrets were deleted",
         ]
     );
+}
+
+#[tokio::test]
+async fn smb_disk_probe_is_read_only_transient_and_uses_driver_specific_credentials() {
+    let (mock, _) = fixture(StorageAuthentication::SmbDisk, Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, true).await;
+    let observed = c.latest().observe_resource(pool()).unwrap();
+    let query = xenadmin_core::StorageQuery::Probe {
+        host: HostId::parse(HOST).unwrap(),
+        location: location(StorageAuthentication::SmbDisk),
+    };
+    assert!(
+        c.discover_authenticated_storage(
+            observed,
+            query.clone(),
+            credentials(StorageAuthentication::Smb)
+        )
+        .is_err()
+    );
+    let discovery = c
+        .discover_authenticated_storage(
+            observed,
+            query,
+            credentials(StorageAuthentication::SmbDisk),
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(r) = discovery.latest() {
+                return r;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(result, xenadmin_core::StorageDiscoveryResult::Repositories(rows) if rows.len()==1 && rows[0].uuid.to_string()==NEW_SR)
+    );
+    let methods = mock.methods.lock().unwrap().clone();
+    assert_eq!(
+        methods.iter().filter(|m| m.as_str() == "SR.probe").count(),
+        1
+    );
+    assert!(
+        !methods
+            .iter()
+            .any(|m| m.starts_with("secret.") || m.starts_with("Async."))
+    );
+    assert!(c.resource_history().is_empty());
+    c.close().await;
 }

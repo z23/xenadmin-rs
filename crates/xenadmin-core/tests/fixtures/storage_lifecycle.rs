@@ -34,6 +34,9 @@ enum Fault {
     LocalChanged,
     LocalWrongShared,
     LocalMalformed,
+    LocalExistingXfs,
+    LocalSharedPrefix,
+    LocalXfsMalformed,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -97,9 +100,9 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(RpcReply::Json(json!({"result":records.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if method=="SR.probe" {
-            if ["ext","lvm"].contains(&params[3].as_str().unwrap_or("")) {
+            if ["ext","lvm","xfs"].contains(&params[3].as_str().unwrap_or("")) {
                 let known=fault==Fault::LocalExisting || (fault==Fault::LocalChanged && failures.fetch_add(1,Ordering::SeqCst)>=2);
-                let xml=if fault==Fault::LocalMalformed {"<unknown/>".into()} else if known && params[3]=="lvm" {format!("<SRlist><SR><UUID>{CREATED}</UUID><Devlist>/dev/disk/by-id/ata-FIXTURE</Devlist><size>4096</size></SR></SRlist>")} else {"<SRlist/>".into()};
+                let xml=if fault==Fault::LocalMalformed || (fault==Fault::LocalXfsMalformed && params[3]=="xfs") {"<unknown/>".into()} else if (known && params[3]=="lvm") || (fault==Fault::LocalExistingXfs && params[3]=="xfs") || (fault==Fault::LocalSharedPrefix && (params[3]=="xfs" || params[3]=="ext")) {format!("<SRlist><SR><UUID>{CREATED}</UUID><Devlist>/dev/disk/by-id/ata-FIXTURE</Devlist><size>4096</size></SR></SRlist>")} else {"<SRlist/>".into()};
                 return Some(RpcReply::Json(json!({"result":xml})));
             }
             if params[3] == "lvmohba" {
@@ -547,8 +550,13 @@ async fn storage_discovery_cancels_with_connection_generation_and_sanitizes_erro
 }
 
 #[tokio::test]
-async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_backend_arguments() {
+async fn typed_iso_smb_and_iscsi_creation_and_existing_sr_introduction_use_exact_backend_arguments()
+{
     let locations = [
+        StorageLocation::Smb {
+            server: "smb.example.test".into(),
+            share: "disks".into(),
+        },
         StorageLocation::IsoNfs {
             server: "iso.example.test".into(),
             path: "/images".into(),

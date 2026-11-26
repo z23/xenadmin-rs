@@ -19,13 +19,22 @@ fn local_create(kind: LocalStorageKind) -> StorageOperation {
 }
 fn local_drivers(records: &Records) {
     let mut m = records.lock().unwrap();
-    for kind in [LocalStorageKind::Ext, LocalStorageKind::Lvm] {
+    for kind in [
+        LocalStorageKind::Ext,
+        LocalStorageKind::Lvm,
+        LocalStorageKind::Xfs,
+    ] {
         m.insert(format!("SM-{}",kind.kind()),json!({"type":kind.kind(),"name_label":kind.label(),"capabilities":["SR_PROBE"],"configuration":{"device":"local device path"}}));
     }
 }
 #[tokio::test]
-async fn storage_local_creation_probes_both_types_and_verifies_nonshared_exact_attachment() {
-    for kind in [LocalStorageKind::Ext, LocalStorageKind::Lvm] {
+async fn storage_local_creation_probes_all_advertised_types_and_verifies_nonshared_exact_attachment()
+ {
+    for kind in [
+        LocalStorageKind::Ext,
+        LocalStorageKind::Lvm,
+        LocalStorageKind::Xfs,
+    ] {
         let (mock, data) = fixture(Fault::None).await;
         local_drivers(&data);
         let dir = tempfile::tempdir().unwrap();
@@ -46,7 +55,7 @@ async fn storage_local_creation_probes_both_types_and_verifies_nonshared_exact_a
                 .iter()
                 .filter(|m| m.as_str() == "SR.probe")
                 .count(),
-            4
+            6
         );
         assert_eq!(
             mock.methods
@@ -66,6 +75,8 @@ async fn storage_local_refuses_either_existing_backend_changed_probe_and_malform
         Fault::LocalExisting,
         Fault::LocalChanged,
         Fault::LocalMalformed,
+        Fault::LocalExistingXfs,
+        Fault::LocalXfsMalformed,
     ] {
         let (mock, data) = fixture(fault).await;
         local_drivers(&data);
@@ -155,7 +166,7 @@ async fn storage_local_discovery_is_nonformatting_and_retains_existing_repositor
         panic!("wrong query result")
     };
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].kind, LocalStorageKind::Lvm);
+    assert_eq!(rows[0].probe_kinds, vec![LocalStorageKind::Lvm]);
     assert_eq!(rows[0].repository.uuid, SrId::parse(CREATED).unwrap());
     assert!(
         c.submit_resource(
@@ -274,7 +285,11 @@ async fn storage_local_existing_attachment_cannot_be_added_to_another_host_or_mu
 
 #[tokio::test]
 async fn storage_local_nonformatting_introduction_and_single_host_attachment_are_separate() {
-    for kind in [LocalStorageKind::Ext, LocalStorageKind::Lvm] {
+    for kind in [
+        LocalStorageKind::Ext,
+        LocalStorageKind::Lvm,
+        LocalStorageKind::Xfs,
+    ] {
         let (mock, data) = fixture(Fault::None).await;
         local_drivers(&data);
         let dir = tempfile::tempdir().unwrap();
@@ -343,4 +358,83 @@ async fn storage_local_nonformatting_introduction_and_single_host_attachment_are
         );
         c.close().await;
     }
+}
+
+#[tokio::test]
+async fn storage_local_xfs_is_optional_but_advertised_probe_failures_are_not_ignored() {
+    for (case, selected, expected) in [
+        (0, LocalStorageKind::Ext, OperationState::Succeeded),
+        (0, LocalStorageKind::Xfs, OperationState::Rejected),
+        (1, LocalStorageKind::Ext, OperationState::Rejected),
+        (1, LocalStorageKind::Xfs, OperationState::Rejected),
+    ] {
+        let (mock, data) = fixture(Fault::None).await;
+        local_drivers(&data);
+        if case == 0 {
+            data.lock().unwrap().remove("SM-xfs");
+        } else {
+            data.lock().unwrap().get_mut("SM-xfs").unwrap()["capabilities"] = json!([]);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let r = finished(&submit(&c, pool(), local_create(selected))).await;
+        assert_eq!(r.state, expected, "{case} {selected:?}: {}", r.detail);
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.as_str() == "Async.SR.create")
+                .count(),
+            usize::from(expected == OperationState::Succeeded)
+        );
+        c.close().await;
+    }
+}
+
+#[tokio::test]
+async fn local_ext_xfs_probe_prefix_is_grouped_without_claiming_filesystem_identity() {
+    let (mock, data) = fixture(Fault::LocalSharedPrefix).await;
+    local_drivers(&data);
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connection(&mock, &backend, true).await;
+    let probe = c
+        .discover_storage(
+            c.latest().observe_resource(pool()).unwrap(),
+            StorageQuery::LocalDevice {
+                host: HostId::parse(HOST).unwrap(),
+                device: DEVICE.into(),
+            },
+        )
+        .unwrap();
+    let result = tokio::time::timeout(deadline(3), async {
+        loop {
+            if let Some(result) = probe.latest() {
+                break result.unwrap();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let StorageDiscoveryResult::LocalRepositories(rows) = result else {
+        panic!("local result expected")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].probe_kinds,
+        vec![LocalStorageKind::Ext, LocalStorageKind::Xfs]
+    );
+    assert_eq!(rows[0].repository.uuid, SrId::parse(CREATED).unwrap());
+    assert!(
+        !mock
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.starts_with("Async."))
+    );
+    c.close().await;
 }

@@ -9,18 +9,21 @@ use xenadmin_xapi::{calls, refs};
 pub enum LocalStorageKind {
     Ext,
     Lvm,
+    Xfs,
 }
 impl LocalStorageKind {
     pub fn kind(self) -> &'static str {
         match self {
             Self::Ext => "ext",
             Self::Lvm => "lvm",
+            Self::Xfs => "xfs",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Ext => "Local EXT",
             Self::Lvm => "Local LVM",
+            Self::Xfs => "Local XFS",
         }
     }
 }
@@ -40,7 +43,7 @@ impl LocalDeviceDeclaration {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredLocalRepository {
-    pub kind: LocalStorageKind,
+    pub probe_kinds: Vec<LocalStorageKind>,
     pub repository: crate::DiscoveredRepository,
 }
 pub(crate) fn valid_path(device: &str) -> bool {
@@ -92,11 +95,18 @@ pub(crate) async fn probe(
         .as_object()
         .filter(|r| r.len() <= 256)
         .ok_or(Error::Protocol("Storage driver capabilities unavailable"))?;
-    let mut result = Vec::new();
-    for kind in [LocalStorageKind::Ext, LocalStorageKind::Lvm] {
+    let mut result: Vec<DiscoveredLocalRepository> = Vec::new();
+    for kind in [
+        LocalStorageKind::Ext,
+        LocalStorageKind::Lvm,
+        LocalStorageKind::Xfs,
+    ] {
         let mut matching = drivers
             .values()
             .filter(|r| SmRecord::new(r).type_() == kind.kind());
+        if kind == LocalStorageKind::Xfs && matching.clone().next().is_none() {
+            continue;
+        }
         let driver = matching.next().ok_or(Error::Protocol(
             "Both local EXT and LVM probing drivers are required",
         ))?;
@@ -128,7 +138,22 @@ pub(crate) async fn probe(
             )
             .await?;
         for repository in storage_discovery::decode_repositories(&xml)? {
-            result.push(DiscoveredLocalRepository { kind, repository });
+            if let Some(existing) = result
+                .iter_mut()
+                .find(|r| r.repository.uuid == repository.uuid)
+            {
+                if existing.repository != repository {
+                    return Err(Error::Protocol(
+                        "Local probes disagree about repository metadata",
+                    ));
+                }
+                existing.probe_kinds.push(kind);
+            } else {
+                result.push(DiscoveredLocalRepository {
+                    probe_kinds: vec![kind],
+                    repository,
+                });
+            }
         }
     }
     Ok(result)
@@ -203,7 +228,7 @@ pub(crate) async fn preflight(
     }
     if !probe(session, host, device).await?.is_empty() {
         return Err(Error::Protocol(
-            "An existing EXT or LVM repository was found; introduce it rather than formatting this device",
+            "An existing EXT, LVM or XFS repository was found; introduce it rather than formatting this device",
         ));
     }
     // Empty probe and unmatched aliases do not establish physical ownership or blank media.
@@ -225,12 +250,14 @@ async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), E
 }
 
 pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error> {
-    if matches!(SrRecord::new(sr).type_().text(), Some("ext" | "lvm"))
-        && (SrRecord::new(sr).shared() != false
-            || !SrRecord::new(sr)
-                .pbds()
-                .members()
-                .is_some_and(|a| a.len() == 1 && a[0] == reference))
+    if matches!(
+        SrRecord::new(sr).type_().text(),
+        Some("ext" | "lvm" | "xfs")
+    ) && (SrRecord::new(sr).shared() != false
+        || !SrRecord::new(sr)
+            .pbds()
+            .members()
+            .is_some_and(|a| a.len() == 1 && a[0] == reference))
     {
         return Err(Error::Protocol(
             "Local storage must have exactly one selected host attachment",
