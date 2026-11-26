@@ -286,6 +286,52 @@ async fn pool_wide_creation_and_retagging_verify_exact_graph_and_preserve_unplug
     }
 }
 #[tokio::test]
+async fn pool_wide_removal_destroys_the_reviewed_interfaces_whatever_the_network_mtu() {
+    // A new VLAN interface needs a network MTU its uplink can carry. A removal makes
+    // none, so that rule does not stand in its way; a retag makes one and is refused.
+    for remove in [true, false] {
+        let (mock, control) = fixture(true, Fault::None).await;
+        control
+            .lock()
+            .unwrap()
+            .records
+            .get_mut(&reference("network", 5))
+            .unwrap()["MTU"] = json!("9000");
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend).await;
+        let NetworkTopologyOperation::RetagVlans { interfaces, tag } = operation(&c, true) else {
+            unreachable!()
+        };
+        let op = if remove {
+            NetworkTopologyOperation::DeleteVlans { interfaces }
+        } else {
+            NetworkTopologyOperation::RetagVlans { interfaces, tag }
+        };
+        let result = finish(&submit(&c, op)).await;
+        if remove {
+            assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+            assert_eq!(result.topology_changes.removed_vlans.len(), 2);
+            assert_eq!(result.topology_changes.created_vlans.len(), 0);
+            assert_eq!(count(&mock, "Async.VLAN.destroy"), 2);
+            let rows = &control.lock().unwrap().records;
+            assert_eq!(rows[&reference("network", 5)]["PIFs"], json!([]));
+            for host in [2, 3] {
+                assert!(!rows.contains_key(&reference("VLAN", host + 20)));
+                assert!(!rows.contains_key(&reference("PIF", host + 30)));
+                assert_eq!(
+                    rows[&reference("PIF", host + 10)]["VLAN_slave_of"],
+                    json!([])
+                );
+            }
+        } else {
+            assert_eq!(result.state, OperationState::Rejected, "{}", result.detail);
+            assert_eq!(control.lock().unwrap().writes, 0);
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_vlan_zero_uses_the_explicit_api_tag() {
     let (mock, _) = fixture(false, Fault::None).await;
     let dir = tempfile::tempdir().unwrap();

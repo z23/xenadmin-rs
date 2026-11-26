@@ -456,12 +456,15 @@ pub(super) async fn prepare(
     let (_, target) = checked_network(session, &plan, None).await?;
     for parent in operation.uplinks() {
         let (_, pif) = uplink(session, parent, Purpose::Write).await?;
-        require(
-            network::number(NetworkRecord::new(&target).mtu())
-                .zip(network::number(PifRecord::new(&pif).mtu()))
-                .is_some_and(|(net, pif)| net >= 576 && net <= pif),
-            "The VLAN network MTU must not exceed its uplink MTU",
-        )?;
+        // A removal creates nothing, so the MTU a new VLAN would need is not its concern.
+        if !matches!(operation, NetworkTopologyOperation::DeleteVlans { .. }) {
+            require(
+                network::number(NetworkRecord::new(&target).mtu())
+                    .zip(network::number(PifRecord::new(&pif).mtu()))
+                    .is_some_and(|(net, pif)| net >= 576 && net <= pif),
+                "The VLAN network MTU must not exceed its uplink MTU",
+            )?;
+        }
         if let NetworkTopologyOperation::CreateVlans { tag, .. } = &operation {
             unused_tag(session, parent.pif, *tag).await?;
         }
