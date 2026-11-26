@@ -81,10 +81,18 @@ fn records(value: &Value) -> Result<&serde_json::Map<String, Value>, Error> {
         .filter(|m| m.len() <= 10000)
         .ok_or(Error::Protocol("Local storage ownership data unavailable"))
 }
+/// What a host answers for its XFS driver while `xfsprogs` is not installed there. The
+/// driver is listed on every XCP-ng host, and it refuses to load ("The SR is not
+/// available") before it looks at a device.
+const XFS_DRIVER_UNAVAILABLE: &str = "SR_BACKEND_FAILURE_47";
+
+/// Asks each local driver what it knows on the device. `selected` is the driver a new
+/// repository would be made with, when there is one.
 pub(crate) async fn probe(
     session: &Session,
     host: HostId,
     device: &str,
+    selected: Option<LocalStorageKind>,
 ) -> Result<Vec<DiscoveredLocalRepository>, Error> {
     if !valid_path(device) {
         return Err(Error::InvalidResourceCommand);
@@ -126,7 +134,7 @@ pub(crate) async fn probe(
         {
             return Err(Error::UnavailableAction);
         }
-        let xml = session
+        let xml = match session
             .storage_probe_xml(
                 vec![
                     json!(&host_ref),
@@ -136,7 +144,20 @@ pub(crate) async fn probe(
                 ],
                 &[],
             )
-            .await?;
+            .await
+        {
+            // A host that cannot load the XFS driver has nothing more to report: its
+            // probe looks for the volume-group prefix the EXT probe has already looked
+            // for. Only making an XFS repository needs the driver itself.
+            Err(Error::Api(code))
+                if kind == LocalStorageKind::Xfs
+                    && selected != Some(LocalStorageKind::Xfs)
+                    && code == XFS_DRIVER_UNAVAILABLE =>
+            {
+                continue;
+            }
+            xml => xml?,
+        };
         for repository in storage_discovery::decode_repositories(&xml)? {
             if let Some(existing) = result
                 .iter_mut()
@@ -163,7 +184,7 @@ pub(crate) async fn preflight(
     host: HostId,
     location: &StorageLocation,
 ) -> Result<(), Error> {
-    let StorageLocation::Local { device, .. } = location else {
+    let StorageLocation::Local { kind, device } = location else {
         return Err(Error::InvalidResourceCommand);
     };
     let (host_ref, host_record) = read_host(session, host).await?;
@@ -226,7 +247,7 @@ pub(crate) async fn preflight(
             }
         }
     }
-    if !probe(session, host, device).await?.is_empty() {
+    if !probe(session, host, device, Some(*kind)).await?.is_empty() {
         return Err(Error::Protocol(
             "An existing EXT, LVM or XFS repository was found; introduce it rather than formatting this device",
         ));

@@ -180,7 +180,7 @@ impl DiscoveryRequest {
     async fn query(&self, session: &Session) -> Result<StorageDiscoveryResult, Error> {
         match &self.query {
             StorageQuery::LocalDevice { host, device } => {
-                crate::storage_local::probe(session, *host, device)
+                crate::storage_local::probe(session, *host, device, None)
                     .await
                     .map(StorageDiscoveryResult::LocalRepositories)
             }

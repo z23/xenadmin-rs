@@ -77,6 +77,8 @@ async fn storage_local_refuses_either_existing_backend_changed_probe_and_malform
         Fault::LocalMalformed,
         Fault::LocalExistingXfs,
         Fault::LocalXfsMalformed,
+        Fault::LocalSharedPrefixXfsUnavailable,
+        Fault::LocalXfsFailure,
     ] {
         let (mock, data) = fixture(fault).await;
         local_drivers(&data);
@@ -84,7 +86,7 @@ async fn storage_local_refuses_either_existing_backend_changed_probe_and_malform
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connection(&mock, &backend, false).await;
         let r = finished(&submit(&c, pool(), local_create(LocalStorageKind::Ext))).await;
-        assert_eq!(r.state, OperationState::Rejected, "{}", r.detail);
+        assert_eq!(r.state, OperationState::Rejected, "{fault:?}: {}", r.detail);
         assert!(
             !mock
                 .methods
@@ -391,6 +393,87 @@ async fn storage_local_xfs_is_optional_but_advertised_probe_failures_are_not_ign
         );
         c.close().await;
     }
+}
+
+#[tokio::test]
+async fn storage_local_xfs_driver_that_cannot_load_does_not_block_ext_or_lvm() {
+    // Every XCP-ng host lists the XFS driver. Where xfsprogs is not installed the driver
+    // refuses to load, so its probe fails before it looks at the device. The EXT probe
+    // has looked for the same volume-group prefix, and only an XFS repository needs the
+    // driver itself.
+    for (selected, expected) in [
+        (LocalStorageKind::Ext, OperationState::Succeeded),
+        (LocalStorageKind::Lvm, OperationState::Succeeded),
+        (LocalStorageKind::Xfs, OperationState::Rejected),
+    ] {
+        let (mock, data) = fixture(Fault::LocalXfsUnavailable).await;
+        local_drivers(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let r = finished(&submit(&c, pool(), local_create(selected))).await;
+        assert_eq!(r.state, expected, "{selected:?}: {}", r.detail);
+        let methods = mock.methods.lock().unwrap().clone();
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|m| m.as_str() == "Async.SR.create")
+                .count(),
+            usize::from(expected == OperationState::Succeeded)
+        );
+        if expected == OperationState::Succeeded {
+            assert_eq!(data.lock().unwrap()["SR-created"]["type"], selected.kind());
+            // The XFS driver is still asked each time the device is probed.
+            assert_eq!(
+                methods.iter().filter(|m| m.as_str() == "SR.probe").count(),
+                6
+            );
+        }
+        c.close().await;
+    }
+}
+
+#[tokio::test]
+async fn storage_local_discovery_lists_a_shared_prefix_repository_under_ext_when_xfs_cannot_load() {
+    let (mock, data) = fixture(Fault::LocalSharedPrefixXfsUnavailable).await;
+    local_drivers(&data);
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connection(&mock, &backend, true).await;
+    let probe = c
+        .discover_storage(
+            c.latest().observe_resource(pool()).unwrap(),
+            StorageQuery::LocalDevice {
+                host: HostId::parse(HOST).unwrap(),
+                device: DEVICE.into(),
+            },
+        )
+        .unwrap();
+    let result = tokio::time::timeout(deadline(3), async {
+        loop {
+            if let Some(result) = probe.latest() {
+                break result.unwrap();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let StorageDiscoveryResult::LocalRepositories(rows) = result else {
+        panic!("local result expected")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].probe_kinds, vec![LocalStorageKind::Ext]);
+    assert_eq!(rows[0].repository.uuid, SrId::parse(CREATED).unwrap());
+    assert!(
+        !mock
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.starts_with("Async."))
+    );
+    c.close().await;
 }
 
 #[tokio::test]
