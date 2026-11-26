@@ -17,6 +17,11 @@ use tokio_util::sync::CancellationToken;
 const LIMIT: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_millis(500);
 const SOCKET: &str = "desktop-activate.sock";
+/// Where the listener is bound before it is renamed to `SOCKET`. A socket path is limited
+/// to 107 bytes, so this name is no longer than `SOCKET`: a state directory that has room
+/// for the socket has room for its staging name too.
+const STAGING: &str = ".desktop-activate.tmp";
+const _: () = assert!(STAGING.len() <= SOCKET.len());
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,14 +195,26 @@ impl DesktopInstance {
             }
             fs::remove_file(&path)?;
         }
-        let listener = std::os::unix::net::UnixListener::bind(&path)?;
-        let m = fs::symlink_metadata(&path)?;
-        let socket = SocketFile {
-            path,
+        let tmp = self.directory.join(STAGING);
+        if let Ok(stale) = fs::symlink_metadata(&tmp) {
+            if !stale.file_type().is_socket() || stale.uid() != owner {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Desktop activation staging path must be a private user-owned socket",
+                ));
+            }
+            fs::remove_file(&tmp)?;
+        }
+        let listener = std::os::unix::net::UnixListener::bind(&tmp)?;
+        let m = fs::symlink_metadata(&tmp)?;
+        let mut socket = SocketFile {
+            path: tmp,
             device: m.dev(),
             inode: m.ino(),
         };
         fs::set_permissions(&socket.path, fs::Permissions::from_mode(0o600))?;
+        fs::rename(&socket.path, &path)?;
+        socket.path = path;
         listener.set_nonblocking(true)?;
         let cancel = CancellationToken::new();
         let stopped = cancel.clone();

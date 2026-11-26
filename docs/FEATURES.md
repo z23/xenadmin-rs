@@ -207,9 +207,11 @@ dumps, and direct raw-dump download remains unavailable for the target API. See 
 The [HBA/allocation increment](reports/2026-11-08-storage-provisioning.md) adds discovered
 HBA/Fibre Channel LUN creation and driver-advertised thick/thin allocation for new iSCSI/HBA
 repositories. The [local storage increment](reports/2026-11-08-storage-local.md) adds reviewed
-EXT/LVM creation from an operator-declared persistent device path, with a dual repository
-probe and explicit data-loss confirmation. It does not claim automatic physical device
-discovery or fully verified capacity, signatures and ownership; additional backend wizards
+EXT/XFS/LVM creation from an operator-declared persistent device path, with a repository
+probe, explicit driver confirmation on ambiguous probes and explicit data-loss confirmation,
+alongside SMB 3.0 virtual-disk repositories with optional transient authentication (fixture-verified;
+live qualification open for local XFS and SMB virtual disks). It does not claim automatic physical
+device discovery or fully verified capacity, signatures and ownership; additional backend wizards
 remain retained.
 
 The [shared storage graph increment](reports/2026-11-08-storage-graph-repair.md) adds reviewed missing-PBD reconstruction for supported shared locations, server-side credential cloning without reading values, and complete-host multipath detach/settings/replug orchestration. Known partial results offer separately reviewed reconnection; custom host-dependent reconstruction and live path qualification remain open.

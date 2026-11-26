@@ -4,7 +4,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
 };
@@ -12,7 +12,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{
         mpsc::{channel, error::TryRecvError, Receiver, Sender},
-        oneshot, Mutex,
+        oneshot, watch, Mutex,
     },
 };
 use tokio_util::compat::*;
@@ -84,10 +84,9 @@ struct VncInner {
     screen: Arc<AtomicU32>,
     desktop: Arc<DesktopState>,
     input_ch: Sender<ClientMsg>,
-    output_ch: Receiver<VncEvent>,
     decoding_stop: Option<oneshot::Sender<()>>,
     net_conn_stop: Option<oneshot::Sender<()>>,
-    closed: bool,
+    closed: Arc<AtomicBool>,
 }
 
 /// The instance of a connected vnc client
@@ -98,13 +97,14 @@ impl VncInner {
         shared: bool,
         mut pixel_format: Option<PixelFormat>,
         encodings: Vec<VncEncoding>,
-    ) -> Result<Self, VncError>
+    ) -> Result<(Self, Receiver<VncEvent>, watch::Receiver<u64>), VncError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let (conn_ch_tx, conn_ch_rx) = channel(NETWORK_CHANNEL_SIZE);
         let (input_ch_tx, input_ch_rx) = channel(INPUT_CHANNEL_SIZE);
         let (output_ch_tx, output_ch_rx) = channel(OUTPUT_CHANNEL_SIZE);
+        let (updates_tx, updates_rx) = watch::channel(0u64);
         let (decoding_stop_tx, mut decoding_stop_rx) = oneshot::channel();
         let (net_conn_stop_tx, net_conn_stop_rx) = oneshot::channel();
 
@@ -162,6 +162,7 @@ impl VncInner {
                 &encodings,
                 &decoder_screen,
                 &decoder_desktop,
+                Some(&updates_tx),
             )
             .await;
             // Release the network worker and fail any pending resize before waiting
@@ -185,20 +186,23 @@ impl VncInner {
         });
 
         info!("VNC Client {name} starts");
-        Ok(Self {
-            name,
-            screen,
-            desktop,
-            input_ch: input_ch_tx,
-            output_ch: output_ch_rx,
-            decoding_stop: Some(decoding_stop_tx),
-            net_conn_stop: Some(net_conn_stop_tx),
-            closed: false,
-        })
+        Ok((
+            Self {
+                name,
+                screen,
+                desktop,
+                input_ch: input_ch_tx,
+                decoding_stop: Some(decoding_stop_tx),
+                net_conn_stop: Some(net_conn_stop_tx),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+            output_ch_rx,
+            updates_rx,
+        ))
     }
 
     fn input_message(&self, event: X11Event) -> Result<ClientMsg, VncError> {
-        if self.closed {
+        if self.closed.load(Ordering::Acquire) {
             Err(VncError::ClientNotRunning)
         } else {
             let (width, height) = unpack_screen(self.screen.load(Ordering::Acquire));
@@ -246,36 +250,6 @@ impl VncInner {
         }
     }
 
-    async fn recv_event(&mut self) -> Result<VncEvent, VncError> {
-        if self.closed {
-            Err(VncError::ClientNotRunning)
-        } else {
-            match self.output_ch.recv().await {
-                Some(e) => Ok(e),
-                None => {
-                    self.closed = true;
-                    Err(VncError::ClientNotRunning)
-                }
-            }
-        }
-    }
-
-    async fn poll_event(&mut self) -> Result<Option<VncEvent>, VncError> {
-        if self.closed {
-            Err(VncError::ClientNotRunning)
-        } else {
-            match self.output_ch.try_recv() {
-                Err(TryRecvError::Disconnected) => {
-                    self.closed = true;
-                    Err(VncError::ClientNotRunning)
-                }
-                Err(TryRecvError::Empty) => Ok(None),
-                Ok(e) => Ok(Some(e)),
-            }
-            // Ok(self.output_ch.recv().await)
-        }
-    }
-
     /// Stop the VNC engine and release resources
     ///
     fn close(&mut self) -> Result<(), VncError> {
@@ -288,7 +262,7 @@ impl VncInner {
             let decoding_stop = self.decoding_stop.take().unwrap();
             let _ = decoding_stop.send(());
         }
-        self.closed = true;
+        self.closed.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -302,6 +276,9 @@ impl Drop for VncInner {
 
 pub struct VncClient {
     inner: Arc<Mutex<VncInner>>,
+    output: Arc<Mutex<Receiver<VncEvent>>>,
+    closed: Arc<AtomicBool>,
+    updates: watch::Receiver<u64>,
     desktop: Arc<DesktopState>,
     input_ch: Sender<ClientMsg>,
 }
@@ -316,12 +293,22 @@ impl VncClient {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let inner = VncInner::new(stream, shared, pixel_format, encodings).await?;
+        let (inner, output_ch, updates) =
+            VncInner::new(stream, shared, pixel_format, encodings).await?;
         Ok(Self {
             desktop: Arc::clone(&inner.desktop),
             input_ch: inner.input_ch.clone(),
+            closed: Arc::clone(&inner.closed),
+            output: Arc::new(Mutex::new(output_ch)),
+            updates,
             inner: Arc::new(Mutex::new(inner)),
         })
+    }
+
+    /// Monotonic counter incremented each time a server `FramebufferUpdate`
+    /// message finishes queueing its rectangles to the event channel.
+    pub fn framebuffer_updates(&self) -> watch::Receiver<u64> {
+        self.updates.clone()
     }
 
     /// Last validated ExtendedDesktopSize layout; None means support is unconfirmed.
@@ -349,7 +336,7 @@ impl VncClient {
     pub async fn input(&self, event: X11Event) -> Result<(), VncError> {
         let sender = {
             let inner = self.inner.lock().await;
-            if inner.closed {
+            if inner.closed.load(Ordering::Acquire) {
                 return Err(VncError::ClientNotRunning);
             }
             inner.input_ch.clone()
@@ -361,17 +348,43 @@ impl VncClient {
         Ok(())
     }
 
-    /// Receive a `VncEvent` from the engine
-    /// This function will block until a `VncEvent` is received
-    ///
+    /// Receive a `VncEvent` from the engine.
+    /// Does not hold the control mutex, so `input` and `close` proceed concurrently.
     pub async fn recv_event(&self) -> Result<VncEvent, VncError> {
-        self.inner.lock().await.recv_event().await
+        if self.closed.load(Ordering::Acquire) {
+            return Err(VncError::ClientNotRunning);
+        }
+        let mut output = self.output.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(VncError::ClientNotRunning);
+        }
+        match output.recv().await {
+            Some(e) => Ok(e),
+            None => {
+                self.closed.store(true, Ordering::Release);
+                Err(VncError::ClientNotRunning)
+            }
+        }
     }
 
     /// polling `VncEvent` from the engine and give it to the client
     ///
     pub async fn poll_event(&self) -> Result<Option<VncEvent>, VncError> {
-        self.inner.lock().await.poll_event().await
+        if self.closed.load(Ordering::Acquire) {
+            return Err(VncError::ClientNotRunning);
+        }
+        let mut output = self.output.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(VncError::ClientNotRunning);
+        }
+        match output.try_recv() {
+            Err(TryRecvError::Disconnected) => {
+                self.closed.store(true, Ordering::Release);
+                Err(VncError::ClientNotRunning)
+            }
+            Err(TryRecvError::Empty) => Ok(None),
+            Ok(e) => Ok(Some(e)),
+        }
     }
 
     /// Stop the VNC engine and release resources
@@ -385,6 +398,9 @@ impl Clone for VncClient {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            output: self.output.clone(),
+            closed: self.closed.clone(),
+            updates: self.updates.clone(),
             desktop: Arc::clone(&self.desktop),
             input_ch: self.input_ch.clone(),
         }
@@ -460,6 +476,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn asycn_vnc_read_loop<S, F, Fut>(
     stream: &mut S,
     pf: &PixelFormat,
@@ -468,6 +485,7 @@ async fn asycn_vnc_read_loop<S, F, Fut>(
     encodings: &[VncEncoding],
     screen: &AtomicU32,
     desktop: &DesktopState,
+    updates: Option<&watch::Sender<u64>>,
 ) -> Result<(), VncError>
 where
     S: AsyncRead + Unpin,
@@ -477,7 +495,7 @@ where
     tokio::select! {
         biased;
         _ = stop_ch => Ok(()),
-        result = read_vnc_messages(stream, pf, output_func, encodings, screen, desktop) => result,
+        result = read_vnc_messages(stream, pf, output_func, encodings, screen, desktop, updates) => result,
     }
 }
 
@@ -488,6 +506,7 @@ async fn read_vnc_messages<S, F, Fut>(
     encodings: &[VncEncoding],
     shared_screen: &AtomicU32,
     desktop: &DesktopState,
+    updates_tx: Option<&watch::Sender<u64>>,
 ) -> Result<(), VncError>
 where
     S: AsyncRead + Unpin,
@@ -607,6 +626,9 @@ where
                     }
                     desktop.observe(&update);
                     output_func(VncEvent::DesktopUpdate(update)).await?;
+                }
+                if let Some(updates_tx) = updates_tx {
+                    updates_tx.send_modify(|n| *n = n.wrapping_add(1));
                 }
             }
             // SetColorMapEntries,

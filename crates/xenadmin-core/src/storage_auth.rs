@@ -9,6 +9,7 @@ pub enum StorageAuthentication {
     Chap,
     MutualChap,
     Smb,
+    SmbDisk,
 }
 impl StorageAuthentication {
     pub(crate) fn kinds(self) -> &'static [SecretKind] {
@@ -16,6 +17,7 @@ impl StorageAuthentication {
             Self::Chap => &[SecretKind::Chap],
             Self::MutualChap => &[SecretKind::Chap, SecretKind::IncomingChap],
             Self::Smb => &[SecretKind::Smb],
+            Self::SmbDisk => &[SecretKind::SmbDisk],
         }
     }
     pub(crate) fn valid_for(self, operation: &StorageOperation) -> bool {
@@ -28,6 +30,7 @@ impl StorageAuthentication {
             (self, location),
             (Self::Chap | Self::MutualChap, StorageLocation::Iscsi { .. })
                 | (Self::Smb, StorageLocation::IsoSmb { .. })
+                | (Self::SmbDisk, StorageLocation::Smb { .. })
         )
     }
 }
@@ -50,6 +53,9 @@ impl StorageCredentials {
     }
     pub fn smb(username: String, password: String) -> Self {
         Self::new(StorageAuthentication::Smb, username, password)
+    }
+    pub fn smb_disks(username: String, password: String) -> Self {
+        Self::new(StorageAuthentication::SmbDisk, username, password)
     }
     pub fn mutual_chap(
         username: String,
@@ -92,8 +98,10 @@ impl StorageCredentials {
         {
             return Err(Error::InvalidResourceCommand);
         }
-        if self.authentication == StorageAuthentication::Smb
-            && self.entries[0].username.split('\\').count() > 2
+        if matches!(
+            self.authentication,
+            StorageAuthentication::Smb | StorageAuthentication::SmbDisk
+        ) && self.entries[0].username.split('\\').count() > 2
         {
             return Err(Error::InvalidResourceCommand);
         }
@@ -105,6 +113,7 @@ pub(crate) enum SecretKind {
     Chap,
     IncomingChap,
     Smb,
+    SmbDisk,
 }
 impl SecretKind {
     pub(crate) fn password_key(self) -> &'static str {
@@ -112,13 +121,14 @@ impl SecretKind {
             Self::Chap => "chappassword_secret",
             Self::IncomingChap => "incoming_chappassword_secret",
             Self::Smb => "cifspassword_secret",
+            Self::SmbDisk => "password_secret",
         }
     }
     pub(crate) fn username_key(self) -> &'static str {
         match self {
             Self::Chap => "chapuser",
             Self::IncomingChap => "incoming_chapuser",
-            Self::Smb => "username",
+            Self::Smb | Self::SmbDisk => "username",
         }
     }
 }

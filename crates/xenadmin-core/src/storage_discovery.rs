@@ -180,7 +180,7 @@ impl DiscoveryRequest {
     async fn query(&self, session: &Session) -> Result<StorageDiscoveryResult, Error> {
         match &self.query {
             StorageQuery::LocalDevice { host, device } => {
-                crate::storage_local::probe(session, *host, device)
+                crate::storage_local::probe(session, *host, device, None)
                     .await
                     .map(StorageDiscoveryResult::LocalRepositories)
             }
@@ -438,6 +438,10 @@ pub(crate) fn validate_credentials(
             location: StorageLocation::IsoSmb { .. },
             ..
         } => credentials.authentication == crate::StorageAuthentication::Smb,
+        StorageQuery::Probe {
+            location: StorageLocation::Smb { .. },
+            ..
+        } => credentials.authentication == crate::StorageAuthentication::SmbDisk,
         _ => false,
     };
     if valid {

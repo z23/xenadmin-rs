@@ -15,12 +15,12 @@ use xenadmin_xapi::{
     OpaqueRef, Reads, SetField, TextField, Textual, WholeField,
     enumerations::{event_operation, vm_operations, vm_power_state},
     kind,
-    records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
+    records::{HostRecord, NetworkRecord, SrRecord, TaskRecord, VmRecord},
 };
 
 use crate::{
-    ConnectionOptions, Credentials, Error, Host, HostId, Inventory, Network, PoolId, PowerState,
-    Storage, Vm, VmId,
+    ConnectionOptions, Credentials, Error, Host, HostId, Inventory, Network, PowerState, Storage,
+    Vm, VmId,
 };
 
 #[path = "xapi_inventory.rs"]
@@ -418,8 +418,7 @@ impl Session {
                 ],
             )
             .await?;
-        let batch: EventBatch =
-            serde_json::from_value(value).map_err(|_| Error::Protocol("invalid event batch"))?;
+        let batch = EventBatch::from_value(value)?;
         if rpc_trace_enabled() && !batch.events.is_empty() {
             // Development diagnostics only: how many events of each class and kind came,
             // and over how many objects. Never a record, a value or a reference.
@@ -677,6 +676,49 @@ pub(crate) struct EventBatch {
 }
 
 impl EventBatch {
+    /// Destructures an `event.from` JSON result in place, moving each event's `snapshot`
+    /// directly into an `Arc<Value>` instead of recursively re-deserializing it.
+    fn from_value(value: Value) -> Result<Self, Error> {
+        let invalid = || Error::Protocol("invalid event batch");
+        let Value::Object(mut root) = value else {
+            return Err(invalid());
+        };
+        let Some(Value::String(token)) = root.remove("token") else {
+            return Err(invalid());
+        };
+        let Some(Value::Array(raw_events)) = root.remove("events") else {
+            return Err(invalid());
+        };
+        let mut events = Vec::with_capacity(raw_events.len());
+        for raw in raw_events {
+            let Value::Object(mut obj) = raw else {
+                return Err(invalid());
+            };
+            let Some(Value::String(class_name)) = obj.remove("class") else {
+                return Err(invalid());
+            };
+            let Some(Value::String(operation)) = obj.remove("operation") else {
+                return Err(invalid());
+            };
+            let Some(Value::String(reference)) = obj.remove("ref") else {
+                return Err(invalid());
+            };
+            let snapshot = Arc::new(obj.remove("snapshot").unwrap_or(Value::Null));
+            events.push(Event {
+                class_name,
+                operation,
+                reference,
+                snapshot,
+            });
+        }
+        Ok(Self {
+            token,
+            events,
+            reset: false,
+            classes: BTreeMap::new(),
+        })
+    }
+
     /// Makes this batch replace what the store holds instead of adding to it: for a full
     /// batch read again because the inventory was found out of step with the hosts.
     pub(crate) fn rebuild(&mut self) {
@@ -691,6 +733,12 @@ impl EventBatch {
     }
 }
 
+fn deserialize_arc_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Arc<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Arc::new)
+}
+
 #[derive(Deserialize)]
 pub(crate) struct Event {
     #[serde(rename = "class")]
@@ -698,15 +746,145 @@ pub(crate) struct Event {
     operation: String,
     #[serde(rename = "ref")]
     reference: String,
-    #[serde(default)]
-    snapshot: Value,
+    #[serde(default, deserialize_with = "deserialize_arc_value")]
+    snapshot: Arc<Value>,
+}
+
+pub(super) const CLASS_COUNT: usize = 25;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClassMask(u32);
+
+impl ClassMask {
+    pub(super) const EMPTY: Self = Self(0);
+    pub(super) const POOL: Self = Self(1 << 0);
+    pub(super) const HOST: Self = Self(1 << 1);
+    pub(super) const VM: Self = Self(1 << 2);
+    pub(super) const SR: Self = Self(1 << 3);
+    pub(super) const NETWORK: Self = Self(1 << 4);
+    pub(super) const VDI: Self = Self(1 << 5);
+    pub(super) const VBD: Self = Self(1 << 6);
+    pub(super) const VIF: Self = Self(1 << 7);
+    pub(super) const PIF: Self = Self(1 << 8);
+    pub(super) const PIF_METRICS: Self = Self(1 << 9);
+    pub(super) const PBD: Self = Self(1 << 10);
+    pub(super) const BOND: Self = Self(1 << 11);
+    pub(super) const VLAN: Self = Self(1 << 12);
+    pub(super) const TUNNEL: Self = Self(1 << 13);
+    pub(super) const NETWORK_SRIOV: Self = Self(1 << 14);
+    pub(super) const SDN_CONTROLLER: Self = Self(1 << 15);
+    pub(super) const PCI: Self = Self(1 << 16);
+    pub(super) const VM_GUEST_METRICS: Self = Self(1 << 17);
+    pub(super) const VM_METRICS: Self = Self(1 << 18);
+    pub(super) const HOST_METRICS: Self = Self(1 << 19);
+    pub(super) const TASK: Self = Self(1 << 20);
+    pub(super) const MESSAGE: Self = Self(1 << 21);
+    pub(super) const VM_APPLIANCE: Self = Self(1 << 22);
+    pub(super) const VMSS: Self = Self(1 << 23);
+    pub(super) const SM: Self = Self(1 << 24);
+    pub(super) const ALL: Self = Self((1 << CLASS_COUNT) - 1);
+
+    pub(super) const ALL_CLASSES: [(Self, &'static str); CLASS_COUNT] = [
+        (Self::POOL, "pool"),
+        (Self::HOST, "host"),
+        (Self::VM, "vm"),
+        (Self::SR, "sr"),
+        (Self::NETWORK, "network"),
+        (Self::VDI, "vdi"),
+        (Self::VBD, "vbd"),
+        (Self::VIF, "vif"),
+        (Self::PIF, "pif"),
+        (Self::PIF_METRICS, "pif_metrics"),
+        (Self::PBD, "pbd"),
+        (Self::BOND, "bond"),
+        (Self::VLAN, "vlan"),
+        (Self::TUNNEL, "tunnel"),
+        (Self::NETWORK_SRIOV, "network_sriov"),
+        (Self::SDN_CONTROLLER, "sdn_controller"),
+        (Self::PCI, "pci"),
+        (Self::VM_GUEST_METRICS, "vm_guest_metrics"),
+        (Self::VM_METRICS, "vm_metrics"),
+        (Self::HOST_METRICS, "host_metrics"),
+        (Self::TASK, "task"),
+        (Self::MESSAGE, "message"),
+        (Self::VM_APPLIANCE, "vm_appliance"),
+        (Self::VMSS, "vmss"),
+        (Self::SM, "sm"),
+    ];
+
+    pub(super) fn lookup(name: &str) -> Option<(Self, usize, &'static str, bool)> {
+        for (index, &(mask, canonical)) in Self::ALL_CLASSES.iter().enumerate() {
+            if canonical.eq_ignore_ascii_case(name) {
+                return Some((mask, index, canonical, index >= 5));
+            }
+        }
+        None
+    }
+
+    pub(super) const fn index(self) -> usize {
+        self.0.trailing_zeros() as usize
+    }
+
+    pub(super) const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    pub(super) const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    pub(super) const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub(super) const fn is_subset_of(self, other: Self) -> bool {
+        (self.0 & !other.0) == 0
+    }
+}
+
+impl std::ops::BitOr for ClassMask {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for ClassMask {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+pub(super) struct StoreDelta {
+    pub(super) data_dirty: ClassMask,
+    pub(super) ref_dirty: ClassMask,
+    pub(super) classes_changed: ClassMask,
+    pub(super) touched: [Vec<String>; CLASS_COUNT],
+}
+
+impl Default for StoreDelta {
+    fn default() -> Self {
+        Self {
+            data_dirty: ClassMask::EMPTY,
+            ref_dirty: ClassMask::EMPTY,
+            classes_changed: ClassMask::EMPTY,
+            touched: std::array::from_fn(|_| Vec::new()),
+        }
+    }
+}
+
+fn ref_signature(mask: ClassMask, value: &Value) -> Option<(uuid::Uuid, bool)> {
+    let id = value["uuid"].as_str()?.parse::<uuid::Uuid>().ok()?;
+    let is_snapshot = mask == ClassMask::VM && VmRecord::new(value).is_a_snapshot() == true;
+    Some((id, is_snapshot))
 }
 
 #[derive(Default, Clone)]
 pub(crate) struct Store {
-    records: BTreeMap<String, BTreeMap<String, Value>>,
+    records: BTreeMap<String, Arc<BTreeMap<String, Arc<Value>>>>,
     revision: u64,
     classes: BTreeMap<String, crate::model::ClassAvailability>,
+    cache: Option<Arc<inventory::DecodedCache>>,
 }
 
 impl Store {
@@ -717,18 +895,29 @@ impl Store {
             .keys()
             .map(|c| (c.clone(), crate::ClassAvailability::Available))
             .collect();
+        let records = records
+            .into_iter()
+            .map(|(class, map)| {
+                (
+                    class,
+                    Arc::new(map.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()),
+                )
+            })
+            .collect();
         Self {
             records,
             classes,
             revision: 0,
+            cache: None,
         }
         .inventory()
     }
 
     pub(crate) fn allows(&self, vm: VmId, action: &crate::OperationAction) -> bool {
+        let vm_uuid = vm.to_string();
         self.class("vm")
-            .find(|(_, value)| VmRecord::new(value).uuid().text() == Some(vm.to_string().as_str()))
-            .is_some_and(|(_, value)| {
+            .find(|(_, value)| VmRecord::new(value).uuid().text() == Some(vm_uuid.as_str()))
+            .is_some_and(|(vm_ref, value)| {
                 let view = VmRecord::new(value);
                 view.is_control_domain() != true
                     && (view.is_a_template() != true
@@ -741,14 +930,15 @@ impl Store {
                             operation,
                         }) => {
                             let source = operation.snapshot().and_then(|id| {
+                                let snapshot_uuid = id.to_string();
                                 self.class("vm")
                                     .find(|(_, candidate)| {
                                         let candidate = VmRecord::new(candidate);
-                                        candidate.uuid().text() == Some(id.to_string().as_str())
+                                        candidate.uuid().text() == Some(snapshot_uuid.as_str())
                                             && candidate.is_a_snapshot() == true
                                             && candidate.is_control_domain() == false
                                             && candidate.snapshot_of().reference()
-                                                == self.vm_reference(vm).as_deref()
+                                                == Some(vm_ref.as_str())
                                     })
                                     .map(|(_, candidate)| candidate)
                             });
@@ -779,14 +969,14 @@ impl Store {
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Revert {
                             snapshot,
                         }) => {
+                            let snapshot_uuid = snapshot.to_string();
                             view.power_state() == vm_power_state::HALTED
                                 && self.class("vm").any(|(reference, candidate)| {
                                     let snapshot_view = VmRecord::new(candidate);
-                                    snapshot_view.uuid().text()
-                                        == Some(snapshot.to_string().as_str())
+                                    snapshot_view.uuid().text() == Some(snapshot_uuid.as_str())
                                         && snapshot_view.is_a_snapshot() == true
                                         && snapshot_view.snapshot_of().reference()
-                                            == self.vm_reference(vm).as_deref()
+                                            == Some(vm_ref.as_str())
                                         && reference != "OpaqueRef:NULL"
                                         && advertises(candidate, vm_operations::REVERT)
                                 })
@@ -794,25 +984,29 @@ impl Store {
                         crate::OperationAction::Snapshot(
                             crate::SnapshotOperation::Clone { snapshot, .. }
                             | crate::SnapshotOperation::Delete { snapshot, .. },
-                        ) => self.class("vm").any(|(_, candidate)| {
-                            let snapshot_view = VmRecord::new(candidate);
-                            snapshot_view.uuid().text() == Some(snapshot.to_string().as_str())
-                                && snapshot_view.is_a_snapshot() == true
-                                && snapshot_view.snapshot_of().reference()
-                                    == self.vm_reference(vm).as_deref()
-                                && match action {
-                                    crate::OperationAction::Snapshot(
-                                        crate::SnapshotOperation::Clone { .. },
-                                    ) => advertises(candidate, vm_operations::CLONE),
-                                    _ => can_delete_snapshot(candidate),
-                                }
-                        }),
+                        ) => {
+                            let snapshot_uuid = snapshot.to_string();
+                            self.class("vm").any(|(_, candidate)| {
+                                let snapshot_view = VmRecord::new(candidate);
+                                snapshot_view.uuid().text() == Some(snapshot_uuid.as_str())
+                                    && snapshot_view.is_a_snapshot() == true
+                                    && snapshot_view.snapshot_of().reference()
+                                        == Some(vm_ref.as_str())
+                                    && match action {
+                                        crate::OperationAction::Snapshot(
+                                            crate::SnapshotOperation::Clone { .. },
+                                        ) => advertises(candidate, vm_operations::CLONE),
+                                        _ => can_delete_snapshot(candidate),
+                                    }
+                            })
+                        }
                     }
             })
     }
     pub(crate) fn vm_reference(&self, id: VmId) -> Option<String> {
+        let target = id.to_string();
         self.class("vm")
-            .find(|(_, value)| VmRecord::new(value).uuid().text() == Some(id.to_string().as_str()))
+            .find(|(_, value)| VmRecord::new(value).uuid().text() == Some(target.as_str()))
             .map(|(reference, _)| reference.clone())
     }
     /// The hosts whose record here differs, in what the client decides by, from a direct
@@ -852,35 +1046,47 @@ impl Store {
         drift
     }
     pub(crate) fn apply(&mut self, batch: &EventBatch) -> Result<Inventory, Error> {
-        let mut next = self.clone();
-        if batch.reset {
-            next.records.clear();
-        }
-        next.classes.extend(batch.classes.clone());
+        let mut next_records = if batch.reset {
+            BTreeMap::new()
+        } else {
+            self.records.clone()
+        };
+        let mut next_classes = self.classes.clone();
+        let mut delta = StoreDelta::default();
         for (name, state) in &batch.classes {
-            if matches!(
+            let previous = next_classes.insert(name.clone(), state.clone());
+            if let Some((mask, _, _, _)) = ClassMask::lookup(name) {
+                if previous.as_ref() != Some(state) {
+                    delta.data_dirty |= mask;
+                    delta.classes_changed |= mask;
+                }
+                if matches!(
+                    state,
+                    crate::model::ClassAvailability::Unsupported
+                        | crate::model::ClassAvailability::PermissionDenied
+                ) {
+                    if next_records.remove(name).is_some_and(|map| !map.is_empty()) {
+                        delta.ref_dirty |= mask;
+                    }
+                    delta.data_dirty |= mask;
+                }
+            } else if matches!(
                 state,
                 crate::model::ClassAvailability::Unsupported
                     | crate::model::ClassAvailability::PermissionDenied
             ) {
-                next.records.remove(name);
+                next_records.remove(name);
             }
         }
+        let track_delta = !batch.reset && self.cache.is_some();
         for event in &batch.events {
-            let class_name = event.class_name.to_ascii_lowercase();
-            let optional = OPTIONAL_CLASSES
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(&class_name));
-            if !CLASSES
-                .iter()
-                .chain(OPTIONAL_CLASSES)
-                .any(|name| name.eq_ignore_ascii_case(&class_name))
-            {
+            let Some((mask, idx, class_name, optional)) = ClassMask::lookup(&event.class_name)
+            else {
                 continue;
-            }
+            };
             if optional
                 && matches!(
-                    next.classes.get(&class_name),
+                    next_classes.get(class_name),
                     Some(
                         crate::ClassAvailability::PermissionDenied
                             | crate::ClassAvailability::Unsupported
@@ -889,190 +1095,252 @@ impl Store {
             {
                 continue;
             }
-            let records = next.records.entry(class_name).or_default();
+            if !next_records.contains_key(class_name) {
+                next_records.insert(class_name.to_owned(), Arc::new(BTreeMap::new()));
+            }
+            let records = Arc::make_mut(next_records.get_mut(class_name).unwrap());
+            let track_class = track_delta && !delta.ref_dirty.contains(mask);
+            let old_sig = if track_class {
+                records
+                    .get(&event.reference)
+                    .map(|value| ref_signature(mask, value))
+            } else {
+                None
+            };
             match event.operation.as_str() {
                 event_operation::ADD | event_operation::MOD => {
-                    if opaque_reference(&json!(&event.reference)).is_err()
-                        || !event.snapshot.is_object()
-                    {
+                    if !is_opaque_reference(&event.reference) || !event.snapshot.is_object() {
                         if optional {
                             // Retain invalidity until this object is corrected/deleted or the store is resynchronized.
-                            records.insert(event.reference.clone(), Value::Null);
+                            records.insert(event.reference.clone(), Arc::new(Value::Null));
+                            if track_delta {
+                                // No section patches an unreadable record in place: each
+                                // one that reads this class decodes it again from the store.
+                                delta.data_dirty |= mask;
+                                delta.ref_dirty |= mask;
+                            }
                             continue;
                         }
                         return Err(Error::Protocol("invalid inventory event"));
                     }
-                    records.insert(event.reference.clone(), event.snapshot.clone());
+                    let inserted = Arc::clone(&event.snapshot);
+                    let new_sig = if track_class {
+                        Some(ref_signature(mask, &inserted))
+                    } else {
+                        None
+                    };
+                    records.insert(event.reference.clone(), inserted);
+                    if track_delta {
+                        delta.data_dirty |= mask;
+                        if track_class {
+                            if old_sig != new_sig {
+                                delta.ref_dirty |= mask;
+                            } else {
+                                delta.touched[idx].push(event.reference.clone());
+                            }
+                        }
+                    }
                 }
                 event_operation::DEL => {
-                    records.remove(&event.reference);
+                    let removed = records.remove(&event.reference);
+                    if track_delta && removed.is_some() {
+                        delta.data_dirty |= mask;
+                        if track_class {
+                            if old_sig != Some(None) {
+                                delta.ref_dirty |= mask;
+                            } else {
+                                delta.touched[idx].push(event.reference.clone());
+                            }
+                        }
+                    }
                 }
                 _ if optional => {
-                    records.insert(event.reference.clone(), Value::Null);
+                    records.insert(event.reference.clone(), Arc::new(Value::Null));
+                    if track_delta {
+                        delta.data_dirty |= mask;
+                        delta.ref_dirty |= mask;
+                    }
                 }
                 _ => return Err(Error::Protocol("unknown inventory event operation")),
             }
         }
-        if next.records.values().map(BTreeMap::len).sum::<usize>() > MAX_OBJECTS {
+        if next_records.values().map(|r| r.len()).sum::<usize>() > MAX_OBJECTS {
             return Err(Error::Protocol("inventory exceeds the object limit"));
         }
-        next.revision += 1;
-        let inventory = next.inventory()?;
-        *self = next;
+        let staged = Store {
+            records: next_records,
+            revision: self.revision + 1,
+            classes: next_classes,
+            cache: None,
+        };
+        // Validate every fallible top-level section before mutating `self` or its cache,
+        // keeping failed batches completely atomic while allowing zero-clone in-place updates.
+        let inventory = if track_delta {
+            let staged_top = self
+                .cache
+                .as_ref()
+                .expect("checked above")
+                .stage_top(&staged, &delta)?;
+            self.records = staged.records;
+            self.classes = staged.classes;
+            self.revision = staged.revision;
+            let mut cache = self.cache.take().expect("checked above");
+            Arc::make_mut(&mut cache).commit_delta(self, &delta, staged_top);
+            let inventory = cache.to_inventory(self.revision);
+            self.cache = Some(cache);
+            inventory
+        } else {
+            let decoded = inventory::DecodedCache::build_full(&staged)?;
+            let inventory = decoded.to_inventory(staged.revision);
+            self.records = staged.records;
+            self.classes = staged.classes;
+            self.revision = staged.revision;
+            self.cache = Some(Arc::new(decoded));
+            inventory
+        };
         Ok(inventory)
     }
 
-    fn class(&self, name: &str) -> impl Iterator<Item = (&String, &Value)> {
-        self.records.get(name).into_iter().flat_map(|r| r.iter())
+    pub(super) fn class(&self, name: &str) -> impl Iterator<Item = (&String, &Value)> {
+        self.records
+            .get(name)
+            .into_iter()
+            .flat_map(|r| r.iter().map(|(k, v)| (k, v.as_ref())))
+    }
+
+    pub(super) fn class_len(&self, name: &str) -> usize {
+        self.records.get(name).map_or(0, |r| r.len())
+    }
+
+    pub(super) fn record(&self, class: &str, reference: &str) -> Option<&Value> {
+        self.records.get(class)?.get(reference).map(Arc::as_ref)
     }
 
     pub(crate) fn inventory(&self) -> Result<Inventory, Error> {
-        let pools: Vec<_> = self.class("pool").collect();
-        if pools.len() != 1 {
-            return Err(Error::Protocol(
-                "expected one pool in the initial inventory",
-            ));
+        if let Some(cache) = &self.cache {
+            return Ok(cache.to_inventory(self.revision));
         }
-        let pool = pools[0].1;
-        let pool_id = PoolId::parse(required(PoolRecord::new(pool).uuid())?)
-            .map_err(|_| Error::Protocol("invalid pool UUID"))?;
-        let mut host_refs = BTreeMap::new();
-        let mut hosts = BTreeMap::new();
-        for (reference, value) in self.class("host") {
-            let view = HostRecord::new(value);
-            let id = HostId::parse(required(view.uuid())?)
-                .map_err(|_| Error::Protocol("invalid host UUID"))?;
-            host_refs.insert(reference.as_str(), id);
-            hosts.insert(
-                id,
-                Host {
-                    id,
-                    name: label(view.name_label()),
-                    address: string(view.address()),
-                    enabled: HostRecord::new(value).enabled().get().unwrap_or(false),
-                    version: HostRecord::new(value).software_version()["product_version"]
-                        .as_str()
-                        .unwrap_or("Unknown")
-                        .into(),
-                },
-            );
-        }
-        let coordinator = pool
-            .get("master")
-            .and_then(Value::as_str)
-            .and_then(|r| host_refs.get(r))
-            .copied();
-        let mut vm_refs = BTreeMap::new();
-        for (reference, value) in self
-            .class("vm")
-            .filter(|(_, value)| VmRecord::new(value).is_a_snapshot() != true)
-        {
-            let view = VmRecord::new(value);
-            vm_refs.insert(
-                reference.as_str(),
-                VmId::parse(required(view.uuid())?)
-                    .map_err(|_| Error::Protocol("invalid VM UUID"))?,
-            );
-        }
-        let mut vms = BTreeMap::new();
-        let mut snapshots = crate::SnapshotInventory::default();
-        for (_, value) in self.class("vm") {
-            let view = VmRecord::new(value);
-            if view.is_a_snapshot() == true {
-                let mut actions = Vec::new();
-                if advertises(value, vm_operations::REVERT) {
-                    actions.push(crate::SnapshotAction::Revert);
-                }
-                if can_delete_snapshot(value) {
-                    actions.push(crate::SnapshotAction::Delete);
-                }
-                if advertises(value, vm_operations::CLONE) {
-                    actions.push(crate::SnapshotAction::Clone);
-                }
-                snapshots.insert(crate::Snapshot {
-                    id: crate::SnapshotId::parse(required(view.uuid())?)
-                        .map_err(|_| Error::Protocol("invalid snapshot UUID"))?,
-                    vm: view
-                        .snapshot_of()
-                        .reference()
-                        .and_then(|reference| vm_refs.get(reference))
-                        .copied(),
-                    name: label(view.name_label()),
-                    description: string(view.name_description()),
-                    created_at: view
-                        .snapshot_time()
-                        .text()
-                        .filter(|time| !time.is_empty())
-                        .map(str::to_owned),
-                    power_state: decode_power_state(value)?,
-                    allowed_actions: actions,
-                });
-                continue;
-            }
-            let id = VmId::parse(required(view.uuid())?)
-                .map_err(|_| Error::Protocol("invalid VM UUID"))?;
-            let power_state = decode_power_state(value)?;
-            vms.insert(
-                id,
-                Vm {
-                    can_snapshot: advertises(value, vm_operations::SNAPSHOT),
-                    allowed_actions: crate::PowerAction::ALL
-                        .into_iter()
-                        .filter(|action| advertises(value, action.wire()))
-                        .collect(),
-                    id,
-                    name: label(view.name_label()),
-                    description: string(view.name_description()),
-                    power_state,
-                    host: value
-                        .get("resident_on")
-                        .and_then(Value::as_str)
-                        .and_then(|r| host_refs.get(r))
-                        .copied(),
-                    vcpus: number(view.vcpus_at_startup(), "VM.VCPUs_at_startup")?,
-                    memory_bytes: number(view.memory_static_max(), "VM.memory_static_max")?,
-                    is_template: view.is_a_template().get().unwrap_or(false),
-                    is_control_domain: view.is_control_domain().get().unwrap_or(false),
-                },
-            );
-        }
-        let mut storage = Vec::new();
-        for (_, value) in self.class("sr") {
-            let view = SrRecord::new(value);
-            storage.push(Storage {
-                uuid: required(view.uuid())?
-                    .parse()
-                    .map_err(|_| Error::Protocol("invalid SR UUID"))?,
-                name: label(view.name_label()),
-                kind: string(view.type_()),
-                capacity_bytes: storage_number(view.physical_size(), "SR.physical_size")?,
-                used_bytes: storage_number(view.physical_utilisation(), "SR.physical_utilisation")?,
-            });
-        }
-        let mut networks = Vec::new();
-        for (_, value) in self.class("network") {
-            let view = NetworkRecord::new(value);
-            networks.push(Network {
-                uuid: required(view.uuid())?
-                    .parse()
-                    .map_err(|_| Error::Protocol("invalid network UUID"))?,
-                name: label(view.name_label()),
-                bridge: string(view.bridge()),
-            });
-        }
-        Ok(Inventory {
-            pool_id,
-            pool_name: label(PoolRecord::new(pool).name_label()),
-            coordinator,
-            hosts,
-            vms,
-            snapshots,
-            storage,
-            networks,
-            details: inventory::decode(self),
-            revision: self.revision,
-        })
+        Ok(inventory::DecodedCache::build_full(self)?.to_inventory(self.revision))
     }
+
+    #[cfg(test)]
+    pub(crate) fn full_inventory(&self) -> Result<Inventory, Error> {
+        Ok(inventory::DecodedCache::build_full(self)?.to_inventory(self.revision))
+    }
+}
+
+pub(super) fn decode_top_host(value: &Value) -> Result<(HostId, Host), Error> {
+    let view = HostRecord::new(value);
+    let id =
+        HostId::parse(required(view.uuid())?).map_err(|_| Error::Protocol("invalid host UUID"))?;
+    Ok((
+        id,
+        Host {
+            id,
+            name: label(view.name_label()),
+            address: string(view.address()),
+            enabled: HostRecord::new(value).enabled().get().unwrap_or(false),
+            version: HostRecord::new(value).software_version()["product_version"]
+                .as_str()
+                .unwrap_or("Unknown")
+                .into(),
+        },
+    ))
+}
+
+pub(super) fn decode_top_snapshot(
+    value: &Value,
+    vm_refs: &BTreeMap<String, uuid::Uuid>,
+    snapshots: &std::collections::BTreeSet<String>,
+) -> Result<crate::Snapshot, Error> {
+    let view = VmRecord::new(value);
+    let mut actions = Vec::new();
+    if advertises(value, vm_operations::REVERT) {
+        actions.push(crate::SnapshotAction::Revert);
+    }
+    if can_delete_snapshot(value) {
+        actions.push(crate::SnapshotAction::Delete);
+    }
+    if advertises(value, vm_operations::CLONE) {
+        actions.push(crate::SnapshotAction::Clone);
+    }
+    Ok(crate::Snapshot {
+        id: crate::SnapshotId::parse(required(view.uuid())?)
+            .map_err(|_| Error::Protocol("invalid snapshot UUID"))?,
+        vm: view
+            .snapshot_of()
+            .reference()
+            .filter(|reference| !snapshots.contains(*reference))
+            .and_then(|reference| vm_refs.get(reference))
+            .copied()
+            .map(VmId::from),
+        name: label(view.name_label()),
+        description: string(view.name_description()),
+        created_at: view
+            .snapshot_time()
+            .text()
+            .filter(|time| !time.is_empty())
+            .map(str::to_owned),
+        power_state: decode_power_state(value)?,
+        allowed_actions: actions,
+    })
+}
+
+pub(super) fn decode_top_vm(
+    value: &Value,
+    host_refs: &BTreeMap<String, uuid::Uuid>,
+) -> Result<(VmId, Vm), Error> {
+    let view = VmRecord::new(value);
+    let id = VmId::parse(required(view.uuid())?).map_err(|_| Error::Protocol("invalid VM UUID"))?;
+    let power_state = decode_power_state(value)?;
+    Ok((
+        id,
+        Vm {
+            can_snapshot: advertises(value, vm_operations::SNAPSHOT),
+            allowed_actions: crate::PowerAction::ALL
+                .into_iter()
+                .filter(|action| advertises(value, action.wire()))
+                .collect(),
+            id,
+            name: label(view.name_label()),
+            description: string(view.name_description()),
+            power_state,
+            host: value
+                .get("resident_on")
+                .and_then(Value::as_str)
+                .and_then(|r| host_refs.get(r))
+                .copied()
+                .map(HostId::from),
+            vcpus: number(view.vcpus_at_startup(), "VM.VCPUs_at_startup")?,
+            memory_bytes: number(view.memory_static_max(), "VM.memory_static_max")?,
+            is_template: view.is_a_template().get().unwrap_or(false),
+            is_control_domain: view.is_control_domain().get().unwrap_or(false),
+        },
+    ))
+}
+
+pub(super) fn decode_top_storage(value: &Value) -> Result<Storage, Error> {
+    let view = SrRecord::new(value);
+    Ok(Storage {
+        uuid: required(view.uuid())?
+            .parse()
+            .map_err(|_| Error::Protocol("invalid SR UUID"))?,
+        name: label(view.name_label()),
+        kind: string(view.type_()),
+        capacity_bytes: storage_number(view.physical_size(), "SR.physical_size")?,
+        used_bytes: storage_number(view.physical_utilisation(), "SR.physical_utilisation")?,
+    })
+}
+
+pub(super) fn decode_top_network(value: &Value) -> Result<Network, Error> {
+    let view = NetworkRecord::new(value);
+    Ok(Network {
+        uuid: required(view.uuid())?
+            .parse()
+            .map_err(|_| Error::Protocol("invalid network UUID"))?,
+        name: label(view.name_label()),
+        bridge: string(view.bridge()),
+    })
 }
 
 /// Whether `allowed`, a record's `allowed_operations` read through its own class's view,
@@ -1191,19 +1459,21 @@ pub(crate) async fn prepare_mutation(
     }
 }
 
+fn is_opaque_reference(value: &str) -> bool {
+    value.starts_with("OpaqueRef:")
+        && value != "OpaqueRef:NULL"
+        && value.len() > "OpaqueRef:".len()
+        && value.len() <= 1024
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 pub(crate) fn opaque_reference<'a, R: Reads<'a, kind::Reference>>(
     value: R,
 ) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
-        .filter(|value| {
-            value.starts_with("OpaqueRef:")
-                && *value != "OpaqueRef:NULL"
-                && value.len() > "OpaqueRef:".len()
-                && value.len() <= 1024
-                && value.bytes().all(|byte| byte.is_ascii_graphic())
-        })
+        .filter(|value| is_opaque_reference(value))
         .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid object reference"))
 }
@@ -1443,8 +1713,10 @@ mod tests {
             assert_eq!(inventory.storage.len(), 1);
             assert_eq!(inventory.storage[0].capacity_bytes, None);
             assert_eq!(inventory.storage[0].used_bytes, None);
-            batch.events.last_mut().unwrap().snapshot["physical_size"] = json!("9007199254740993");
-            batch.events.last_mut().unwrap().snapshot["physical_utilisation"] = json!(0);
+            Arc::make_mut(&mut batch.events.last_mut().unwrap().snapshot)["physical_size"] =
+                json!("9007199254740993");
+            Arc::make_mut(&mut batch.events.last_mut().unwrap().snapshot)["physical_utilisation"] =
+                json!(0);
             let inventory = store.apply(&batch).unwrap();
             assert_eq!(
                 inventory.storage[0].capacity_bytes,
@@ -1452,7 +1724,8 @@ mod tests {
             );
             assert_eq!(inventory.storage[0].used_bytes, Some(0));
             for invalid in [json!(-2), json!(0.5), json!("bad-size")] {
-                batch.events.last_mut().unwrap().snapshot["physical_size"] = invalid;
+                Arc::make_mut(&mut batch.events.last_mut().unwrap().snapshot)["physical_size"] =
+                    invalid;
                 assert!(
                     store
                         .apply(&batch)
@@ -1475,7 +1748,7 @@ mod tests {
             json!("9223372036854775808"),
         ] {
             let mut batch = initial();
-            batch.events[1].snapshot["memory_static_max"] = invalid;
+            Arc::make_mut(&mut batch.events[1].snapshot)["memory_static_max"] = invalid;
             let error = store.apply(&batch).unwrap_err().to_string();
             assert!(error.contains("VM.memory_static_max"));
             assert!(!error.contains("not-a-number"));
@@ -1486,7 +1759,7 @@ mod tests {
     fn unknown_power_states_survive_and_deletes_remove_objects() {
         let mut store = Store::default();
         let mut batch = initial();
-        batch.events[1].snapshot["power_state"] = json!("FutureState");
+        Arc::make_mut(&mut batch.events[1].snapshot)["power_state"] = json!("FutureState");
         let inventory = store.apply(&batch).unwrap();
         assert_eq!(
             inventory.guests().next().unwrap().power_state,

@@ -389,9 +389,14 @@ fn render_image(frame: &model::Frame) -> Option<RenderImage> {
     let (width, height) = (u32::from(frame.width), u32::from(frame.height));
     let length = width as usize * height as usize * 4;
     let rgba = frame.rgba.get(..length)?;
-    let mut bgra = Vec::with_capacity(length);
-    for [red, green, blue, _] in rgba.as_chunks::<4>().0 {
-        bgra.extend_from_slice(&[*blue, *green, *red, 255]);
+    let mut bgra = vec![0u8; length];
+    for (dst, src) in bgra
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(rgba.as_chunks::<4>().0)
+    {
+        *dst = [src[2], src[1], src[0], 255];
     }
     let buffer = image::RgbaImage::from_raw(width, height, bgra)?;
     Some(RenderImage::new([image::Frame::new(buffer)]))

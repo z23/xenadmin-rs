@@ -148,7 +148,12 @@ pub(super) fn local_scene(m: &mut Model, review_page: bool) {
     e.declaration = "Fixture lab disk 001, whole disk assigned to local VM storage".into();
     e.local_acknowledged = true;
     e.backends.extend(
-        [LocalStorageKind::Ext, LocalStorageKind::Lvm].map(|kind| StorageBackend {
+        [
+            LocalStorageKind::Ext,
+            LocalStorageKind::Lvm,
+            LocalStorageKind::Xfs,
+        ]
+        .map(|kind| StorageBackend {
             kind: kind.kind().into(),
             name: kind.label().into(),
             features: vec!["SR_PROBE".into()],

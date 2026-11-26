@@ -7538,7 +7538,7 @@ async fn lab_local_storage_lifecycle_on_standalone_host() {
     .await
     .expect("probe answered");
     let existing = match &result {
-        Ok(StorageDiscoveryResult::LocalRepositories(rows)) => Some(rows.iter().map(|r| json!({"kind": format!("{:?}", r.kind), "uuid": r.repository.uuid.to_string()})).collect::<Vec<_>>()),
+        Ok(StorageDiscoveryResult::LocalRepositories(rows)) => Some(rows.iter().map(|r| json!({"probe_kinds": format!("{:?}", r.probe_kinds), "uuid": r.repository.uuid.to_string()})).collect::<Vec<_>>()),
         _ => None,
     };
     steps.push(json!({"step": "probe the data disk", "device": device, "result": match &result { Ok(_) => "ok".to_string(), Err(e) => e.clone() }, "existing_repositories": existing}));
@@ -7918,7 +7918,7 @@ async fn lab_local_storage_forget_and_introduce() {
     let found = match &result {
         Ok(StorageDiscoveryResult::LocalRepositories(rows)) => {
             rows.iter().find(|r| r.repository.uuid == sr_id).map(
-                |r| json!({"kind": format!("{:?}", r.kind), "size_bytes": r.repository.size_bytes}),
+                |r| json!({"probe_kinds": format!("{:?}", r.probe_kinds), "size_bytes": r.repository.size_bytes}),
             )
         }
         _ => None,

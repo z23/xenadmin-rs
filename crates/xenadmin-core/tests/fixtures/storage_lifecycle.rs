@@ -10,7 +10,7 @@ const HOST: &str = "22222222-2222-2222-2222-222222222222";
 const SR: &str = "66666666-6666-6666-6666-666666666666";
 const PBD: &str = "77777777-7777-7777-7777-777777777777";
 const CREATED: &str = "88888888-8888-8888-8888-888888888888";
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Fault {
     None,
     DropReply,
@@ -34,6 +34,15 @@ enum Fault {
     LocalChanged,
     LocalWrongShared,
     LocalMalformed,
+    LocalExistingXfs,
+    LocalSharedPrefix,
+    LocalXfsMalformed,
+    /// The XFS driver is listed and cannot load: `xfsprogs` is not installed.
+    LocalXfsUnavailable,
+    /// The same, with a repository behind the prefix the EXT and XFS probes share.
+    LocalSharedPrefixXfsUnavailable,
+    /// The XFS probe fails for a reason that says nothing about the driver.
+    LocalXfsFailure,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -97,9 +106,15 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(RpcReply::Json(json!({"result":records.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if method=="SR.probe" {
-            if ["ext","lvm"].contains(&params[3].as_str().unwrap_or("")) {
+            if ["ext","lvm","xfs"].contains(&params[3].as_str().unwrap_or("")) {
+                if params[3]=="xfs" && matches!(fault,Fault::LocalXfsUnavailable|Fault::LocalSharedPrefixXfsUnavailable) {
+                    return Some(RpcReply::Json(json!({"error":{"message":"SR_BACKEND_FAILURE_47","data":["","The SR is not available [opterr=xfsprogs is not installed]",""]}})));
+                }
+                if params[3]=="xfs" && fault==Fault::LocalXfsFailure {
+                    return Some(RpcReply::Json(json!({"error":{"message":"SR_BACKEND_FAILURE_40","data":["","The SR scan failed",""]}})));
+                }
                 let known=fault==Fault::LocalExisting || (fault==Fault::LocalChanged && failures.fetch_add(1,Ordering::SeqCst)>=2);
-                let xml=if fault==Fault::LocalMalformed {"<unknown/>".into()} else if known && params[3]=="lvm" {format!("<SRlist><SR><UUID>{CREATED}</UUID><Devlist>/dev/disk/by-id/ata-FIXTURE</Devlist><size>4096</size></SR></SRlist>")} else {"<SRlist/>".into()};
+                let xml=if fault==Fault::LocalMalformed || (fault==Fault::LocalXfsMalformed && params[3]=="xfs") {"<unknown/>".into()} else if (known && params[3]=="lvm") || (fault==Fault::LocalExistingXfs && params[3]=="xfs") || (fault==Fault::LocalSharedPrefix && (params[3]=="xfs" || params[3]=="ext")) || (fault==Fault::LocalSharedPrefixXfsUnavailable && params[3]=="ext") {format!("<SRlist><SR><UUID>{CREATED}</UUID><Devlist>/dev/disk/by-id/ata-FIXTURE</Devlist><size>4096</size></SR></SRlist>")} else {"<SRlist/>".into()};
                 return Some(RpcReply::Json(json!({"result":xml})));
             }
             if params[3] == "lvmohba" {
@@ -547,8 +562,13 @@ async fn storage_discovery_cancels_with_connection_generation_and_sanitizes_erro
 }
 
 #[tokio::test]
-async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_backend_arguments() {
+async fn typed_iso_smb_and_iscsi_creation_and_existing_sr_introduction_use_exact_backend_arguments()
+{
     let locations = [
+        StorageLocation::Smb {
+            server: "smb.example.test".into(),
+            share: "disks".into(),
+        },
         StorageLocation::IsoNfs {
             server: "iso.example.test".into(),
             path: "/images".into(),
