@@ -50,6 +50,9 @@ pub const CHECK: Check = Check {
 pub const NO_UPLINK: &str =
     "Choose an uplink network with exactly one managed untagged interface on every pool host";
 
+/// Why a removal cannot be opened on a network that has no interface.
+pub const NO_VLANS: &str = "This network has no VLAN interfaces to remove";
+
 pub fn uplinks(
     i: &Inventory,
     source: NetworkId,
@@ -124,7 +127,13 @@ pub fn capture(i: &Inventory, network: NetworkId, mode: Mode) -> Result<Editor, 
         selection: match mode {
             Mode::Create => Selection::Create(vec![]),
             Mode::Retag => Selection::Retag(retag(i, network)?),
-            Mode::Delete => Selection::Delete(retag(i, network)?),
+            Mode::Delete => {
+                let interfaces = retag(i, network)?;
+                if interfaces.is_empty() {
+                    return Err(NO_VLANS.into());
+                }
+                Selection::Delete(interfaces)
+            }
         },
     })
 }
@@ -133,6 +142,30 @@ pub fn capture(i: &Inventory, network: NetworkId, mode: Mode) -> Result<Editor, 
 /// the form): every other network with interfaces for which [`uplinks`]
 /// succeeds, with the uplinks it gives.
 pub fn sources(i: &Inventory, network: NetworkId) -> Vec<(NetworkId, Vec<VlanUplink>)> {
+    candidates(i, network)
+        .into_iter()
+        .filter_map(|(source, uplinks)| Some((source, uplinks.ok()?)))
+        .collect()
+}
+
+/// The networks that have one managed untagged interface on every pool host and still
+/// cannot be chosen, each with the reason its review cannot be captured. An SR-IOV
+/// network is one of these until its hosts are disabled and evacuated; without the
+/// reason it would only be missing from the choices.
+pub fn unavailable_sources(i: &Inventory, network: NetworkId) -> Vec<(NetworkId, String)> {
+    candidates(i, network)
+        .into_iter()
+        .filter_map(|(source, uplinks)| Some((source, uplinks.err()?)))
+        .collect()
+}
+
+/// Every other network with one managed untagged interface on each pool host, with its
+/// uplinks or the reason their review cannot be captured: what [`sources`] and
+/// [`unavailable_sources`] each give one half of.
+pub fn candidates(
+    i: &Inventory,
+    network: NetworkId,
+) -> Vec<(NetworkId, Result<Vec<VlanUplink>, String>)> {
     i.details
         .pifs
         .values()
@@ -140,7 +173,8 @@ pub fn sources(i: &Inventory, network: NetworkId) -> Vec<(NetworkId, Vec<VlanUpl
         .filter(|n| *n != network)
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter_map(|source| Some((source, uplinks(i, source, network).ok()?)))
+        .map(|source| (source, uplinks(i, source, network)))
+        .filter(|(_, uplinks)| uplinks.as_ref().err().is_none_or(|e| e != NO_UPLINK))
         .collect()
 }
 

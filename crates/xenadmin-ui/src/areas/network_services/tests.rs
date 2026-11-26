@@ -952,6 +952,54 @@ fn vlan_removal_review_keeps_exact_ids_and_has_destroy_only_permission() {
 }
 
 #[test]
+fn vlan_removal_is_not_offered_on_a_network_with_nothing_to_remove() {
+    // The scene reviews a creation, so its network has no interface yet.
+    let mut h = Harness::scene("network-topology");
+    let network = ed(&h).network;
+    h.click("network-close");
+    assert!(topology::retag(&inventory(&h), network).unwrap().is_empty());
+    assert_eq!(
+        h.eligibility(super::commands::VLAN_DELETE_POOL.0),
+        Eligibility::disabled(topology::NO_VLANS)
+    );
+}
+
+#[test]
+fn an_uplink_network_that_cannot_be_reviewed_is_named_with_the_reason() {
+    let mut h = Harness::scene("network-sriov-vlan");
+    let target = ed(&h).network;
+    h.click("network-close");
+    // One host, whose only untagged interfaces are the SR-IOV pair.
+    let logical = |i: &Inventory| {
+        let parent = i.details.network_fabric.sriovs.values().next().unwrap().logical.unwrap();
+        (i.details.pifs[&parent].host.unwrap(), i.details.pifs[&parent].network.unwrap())
+    };
+    amend(&mut h, |i| {
+        let (host, _) = logical(i);
+        i.hosts.retain(|id, _| *id == host);
+    });
+    let i = inventory(&h);
+    let (host, source) = logical(&i);
+    assert!(topology::sources(&i, target).iter().any(|(n, _)| *n == source));
+    assert!(topology::unavailable_sources(&i, target).is_empty());
+    // The host goes back into service: the SR-IOV review can no longer be captured.
+    amend(&mut h, |i| i.details.hosts.get_mut(&host).unwrap().enabled = Some(true));
+    let i = inventory(&h);
+    assert!(!topology::sources(&i, target).iter().any(|(n, _)| *n == source));
+    let unavailable = topology::unavailable_sources(&i, target);
+    assert_eq!(unavailable.len(), 1);
+    assert_eq!(unavailable[0].0, source);
+    assert!(
+        unavailable[0].1.contains("Disable and evacuate the host"),
+        "{}",
+        unavailable[0].1
+    );
+    // The creation form says so where the choice would have been.
+    h.invoke(VLAN_CREATE_POOL.0);
+    assert!(h.has_text(&format!("cannot be chosen: {}", unavailable[0].1)));
+}
+
+#[test]
 fn capacity_inspection_is_a_separate_readonly_control_without_mutation_review() {
     let mut h = Harness::scene("network-sriov-capacity");
     assert!(h.surfaces().is_empty());

@@ -187,10 +187,14 @@ fn topology_form(t: &topology::Editor, i: &Inventory) -> Vec<Block> {
         }),
         match &t.selection {
             Selection::Create(selected) => {
-                let sources = topology::sources(i, t.network);
+                let candidates = topology::candidates(i, t.network);
+                let sources = candidates
+                    .iter()
+                    .filter_map(|(source, uplinks)| Some((*source, uplinks.as_ref().ok()?)))
+                    .collect::<Vec<_>>();
                 let chosen = sources
                     .iter()
-                    .find(|(_, choices)| choices == selected)
+                    .find(|(_, choices)| *choices == selected)
                     .map(|(source, _)| source.to_string());
                 blocks![
                     caption("Choose an uplink network. It must have exactly one managed untagged interface on every pool host."),
@@ -203,6 +207,13 @@ fn topology_form(t: &topology::Editor, i: &Inventory) -> Vec<Block> {
                         pick_uplink,
                     )
                     .label("Uplink network"),
+                    candidates
+                        .iter()
+                        .filter_map(|(source, uplinks)| Some((*source, uplinks.as_ref().err()?)))
+                        .map(|(source, reason)| {
+                            caption(format!("{} cannot be chosen: {reason}", name(i, source)))
+                        })
+                        .collect::<Vec<_>>(),
                     selected
                         .iter()
                         .map(|p| caption(format!("{} · {}", pif_name(i, p.pif), p.pif)))
