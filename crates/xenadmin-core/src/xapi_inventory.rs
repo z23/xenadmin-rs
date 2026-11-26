@@ -1935,6 +1935,10 @@ impl DecodedCache {
     }
 
     fn update_organization(&mut self, store: &Store, delta: &StoreDelta) {
+        /// Each patched record is found by a scan of the organization's objects, so a
+        /// batch that touches more records than this is decoded in one pass instead.
+        /// Measured, the two cost about the same at a thousand touched records.
+        const ORGANIZATION_PATCH_LIMIT: usize = 1024;
         const ORG_CLASSES: ClassMask = ClassMask::POOL
             .union(ClassMask::HOST)
             .union(ClassMask::VM)
@@ -1942,6 +1946,8 @@ impl DecodedCache {
             .union(ClassMask::NETWORK)
             .union(ClassMask::VDI);
         const PATCHABLE_ORG: ClassMask = ClassMask::VM.union(ClassMask::VDI);
+        let touched = delta.touched[ClassMask::VM.index()].len()
+            + delta.touched[ClassMask::VDI.index()].len();
 
         let org_dirty = delta.data_dirty.intersects(ORG_CLASSES);
         if !org_dirty && !delta.classes_changed.contains(ClassMask::VDI) {
@@ -1952,6 +1958,7 @@ impl DecodedCache {
             && !delta.ref_dirty.intersects(PATCHABLE_ORG)
             && !delta.classes_changed.contains(ClassMask::VDI)
             && !self.refs.duplicate_uuids.intersects(PATCHABLE_ORG)
+            && touched <= ORGANIZATION_PATCH_LIMIT
             && store.class_len("vm") <= 50_000
             && store.class_len("vdi") <= 50_000;
         if can_patch {
@@ -3308,6 +3315,75 @@ mod tests {
         reset.rebuild();
         let inv = store.apply(&reset).unwrap();
         assert_matches_full("reset batch", &store, &inv);
+    }
+
+    #[test]
+    fn a_batch_that_renames_every_guest_matches_a_full_decode() {
+        // More guests than the organization patches one at a time.
+        let guests = 1_100u128;
+        let guest = |n: u128, name: String| {
+            let mut record = vm(10_000 + n);
+            record["name_label"] = json!(name);
+            event("VM", &format!("vm-{n}"), record)
+        };
+        let mut events = initial();
+        events.extend((0..guests).map(|n| guest(n, format!("guest-{n:04}"))));
+        let mut first = batch(events);
+        for class in OPTIONAL_CLASSES {
+            first
+                .classes
+                .insert(class.to_ascii_lowercase(), ClassAvailability::Available);
+        }
+        let mut store = Store::default();
+        store.apply(&first).unwrap();
+        let renamed = (0..guests)
+            .map(|n| guest(n, format!("renamed-{:04}", guests - n)))
+            .collect();
+        let inventory = store.apply(&batch(renamed)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&inventory).unwrap(),
+            serde_json::to_value(store.full_inventory().unwrap()).unwrap()
+        );
+        let names: Vec<_> = inventory
+            .details
+            .organization
+            .objects
+            .iter()
+            .filter(|object| object.name.starts_with("renamed-"))
+            .map(|object| object.name.as_str())
+            .collect();
+        assert_eq!(names.len(), guests as usize);
+        assert!(names.is_sorted());
+    }
+
+    #[test]
+    fn an_unreadable_event_over_an_invalid_record_matches_a_full_decode() {
+        // The organization is complete only while every disk record can be identified.
+        // A disk whose UUID cannot be read makes it incomplete; an event that cannot be
+        // read at all then leaves a record the organization skips.
+        let mut events = initial();
+        events.push(event("VDI", "vdi", json!({"uuid":"not-a-uuid"})));
+        let mut first = batch(events);
+        for class in OPTIONAL_CLASSES {
+            first
+                .classes
+                .insert(class.to_ascii_lowercase(), ClassAvailability::Available);
+        }
+        let mut store = Store::default();
+        let inventory = store.apply(&first).unwrap();
+        assert!(!inventory.details.organization.complete);
+        for unreadable in [
+            json!({"class":"VDI","operation":"future","ref":"OpaqueRef:vdi"}),
+            json!({"class":"VDI","operation":"mod","ref":"OpaqueRef:vdi","snapshot":"garbage"}),
+        ] {
+            let mut store = store.clone();
+            let inventory = store.apply(&batch(vec![unreadable])).unwrap();
+            assert_eq!(
+                serde_json::to_value(&inventory).unwrap(),
+                serde_json::to_value(store.full_inventory().unwrap()).unwrap()
+            );
+            assert!(inventory.details.organization.complete);
+        }
     }
 
     #[test]

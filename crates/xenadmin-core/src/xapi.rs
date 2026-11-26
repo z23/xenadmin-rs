@@ -1114,10 +1114,10 @@ impl Store {
                             // Retain invalidity until this object is corrected/deleted or the store is resynchronized.
                             records.insert(event.reference.clone(), Arc::new(Value::Null));
                             if track_delta {
+                                // No section patches an unreadable record in place: each
+                                // one that reads this class decodes it again from the store.
                                 delta.data_dirty |= mask;
-                                if track_class && old_sig != Some(None) {
-                                    delta.ref_dirty |= mask;
-                                }
+                                delta.ref_dirty |= mask;
                             }
                             continue;
                         }
@@ -1158,9 +1158,7 @@ impl Store {
                     records.insert(event.reference.clone(), Arc::new(Value::Null));
                     if track_delta {
                         delta.data_dirty |= mask;
-                        if track_class && old_sig != Some(None) {
-                            delta.ref_dirty |= mask;
-                        }
+                        delta.ref_dirty |= mask;
                     }
                 }
                 _ => return Err(Error::Protocol("unknown inventory event operation")),
