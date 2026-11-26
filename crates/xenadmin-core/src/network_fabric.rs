@@ -111,6 +111,16 @@ impl NetworkFabricObject {
         self.target().uuid()
     }
 }
+/// An interface as a review holds it: without the link to its metrics record. That link
+/// says which statistics the inventory has loaded, not what the interface is, and the
+/// records read to check a review before a write do not include them. A review that kept
+/// the link would differ from that read on every host that reports interface statistics.
+pub(crate) fn reviewed_interface(p: &crate::PhysicalInterface) -> crate::PhysicalInterface {
+    crate::PhysicalInterface {
+        metrics: None,
+        ..p.clone()
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkFabricMember {
     pub object: NetworkFabricObject,
@@ -321,7 +331,7 @@ impl NetworkFabricReview {
                 "Required network fabric inventory is unavailable, unsupported or not permitted",
             ));
         }
-        let p = d.pifs.get(&input).ok_or(Error::ResourceConflict)?.clone();
+        let p = reviewed_interface(d.pifs.get(&input).ok_or(Error::ResourceConflict)?);
         let host = p.host.ok_or(Error::ResourceConflict)?;
         if p.network.is_none() {
             return Err(Error::ResourceConflict);
@@ -366,7 +376,7 @@ impl NetworkFabricReview {
                 child.id,
                 NetworkFabricMember {
                     object,
-                    interface: child.clone(),
+                    interface: reviewed_interface(child),
                     input,
                 },
             );
@@ -473,7 +483,7 @@ impl NetworkFabricReview {
                         return Err(Error::Protocol("The host PCI driver impact is incomplete"));
                     }
                     if peer.driver == pci.driver {
-                        driver_interfaces.insert(p.id, p.clone());
+                        driver_interfaces.insert(p.id, reviewed_interface(p));
                         driver_hardware.insert(p.id, peer.clone());
                     }
                 }

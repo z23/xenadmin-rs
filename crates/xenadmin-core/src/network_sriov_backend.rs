@@ -235,8 +235,7 @@ pub(crate) async fn vlan_uplink(
                 NetworkSriovRecord::new(s).physical_pif() == pr
                     && network::uuid(s).ok() != Some(review.object.id.uuid())
             })
-            || view.other_config().entries().is_none_or(|m| !m.is_empty())
-            || view.properties().entries().is_none_or(|m| !m.is_empty())
+            || !host_default_configuration(raw)
         {
             return Err(Error::Protocol(
                 "A same-driver physical interface has unreviewed configuration or topology",

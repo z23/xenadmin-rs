@@ -119,6 +119,116 @@ async fn logical_sriov_vlan_create_retag_and_remove_preserve_exact_parents() {
     }
 }
 
+/// What a host reports and the records above leave out: every interface links a metrics
+/// record, a logical or VLAN interface sharing its parent's, and XAPI gives each physical
+/// interface the receive-offload property.
+fn as_a_host_reports(s: &mut Control) {
+    for h in [2u128, 3] {
+        s.records.insert(
+            reference("PIF_metrics", h + 70),
+            json!({
+                "uuid": id(h + 70),
+                "carrier": true,
+                "speed": "10000",
+                "duplex": true,
+                "vendor_id": "8086",
+                "vendor_name": "Fixture",
+                "device_id": "100e",
+                "device_name": "Fixture NIC",
+                "pci_bus_path": "0000:01:00.1",
+            }),
+        );
+        let host = reference("host", h);
+        for (r, p) in s.records.iter_mut() {
+            if r.starts_with("OpaqueRef:PIF:") && p["host"] == host.as_str() {
+                p["metrics"] = json!(reference("PIF_metrics", h + 70));
+                if p["physical"] == true {
+                    p["properties"] = json!({"gro": "on"});
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn logical_sriov_vlan_accepts_records_as_a_host_reports_them() {
+    for mode in [0, 1, 2] {
+        let (mock, s) = fixture(mode != 0, Fault::None).await;
+        {
+            let mut s = s.lock().unwrap();
+            install(&mut s);
+            as_a_host_reports(&mut s);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let b = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &b).await;
+        // The inventory the review is captured from knows the metrics records. The
+        // records read to check the review before each write do not include them.
+        let snapshot = c.latest();
+        let linked = snapshot
+            .inventory()
+            .unwrap()
+            .details
+            .pifs
+            .values()
+            .filter(|p| p.metrics.is_some())
+            .count();
+        assert_eq!(linked, if mode == 0 { 4 } else { 6 });
+        let mut op = reviewed(&c, mode != 0);
+        if mode == 2 {
+            let NetworkTopologyOperation::RetagVlans { interfaces, .. } = op else {
+                unreachable!()
+            };
+            op = NetworkTopologyOperation::DeleteVlans { interfaces };
+        }
+        let result = finish(&submit(&c, op)).await;
+        assert_eq!(
+            result.state,
+            OperationState::Succeeded,
+            "mode {mode}: {}",
+            result.detail
+        );
+        assert_eq!(
+            result.topology_changes.created_vlans.len(),
+            if mode == 2 { 0 } else { 2 }
+        );
+        assert_eq!(
+            result.topology_changes.removed_vlans.len(),
+            if mode == 0 { 0 } else { 2 }
+        );
+        assert_eq!(count(&mock, "Async.network_sriov.create"), 0);
+        assert_eq!(count(&mock, "Async.network_sriov.destroy"), 0);
+    }
+}
+
+#[tokio::test]
+async fn logical_sriov_vlan_refuses_a_same_driver_interface_somebody_configured() {
+    for (field, value) in [
+        ("properties", json!({"gro": "on", "tso": "off"})),
+        ("properties", json!({"gro": "auto"})),
+        ("other_config", json!({"ethtool-speed": "1000"})),
+    ] {
+        let (mock, s) = fixture(false, Fault::None).await;
+        {
+            let mut s = s.lock().unwrap();
+            install(&mut s);
+            as_a_host_reports(&mut s);
+            s.records.get_mut(&reference("PIF", 62)).unwrap()[field] = value.clone();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let b = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &b).await;
+        let r = finish(&submit(&c, reviewed(&c, false))).await;
+        assert_ne!(r.state, OperationState::Succeeded, "{field} {value}");
+        assert_eq!(s.lock().unwrap().writes, 0, "{field} {value}");
+        assert!(
+            r.detail.contains("unreviewed configuration"),
+            "{field} {value}: {}",
+            r.detail
+        );
+    }
+}
+
 #[tokio::test]
 async fn logical_sriov_vlan_rejects_changed_readiness_hardware_and_driver_dependencies_before_write()
  {

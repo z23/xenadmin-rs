@@ -188,6 +188,17 @@ fn fields(k: Kind) -> (&'static str, &'static str, &'static str, &'static str) {
         ),
     }
 }
+/// Whether a physical interface carries only what a host gives every physical interface:
+/// no `other_config`, and no property but receive offload (`gro`), which XAPI sets on each
+/// one when it is introduced. Anything else is configuration the review did not show.
+fn host_default_configuration(p: &Value) -> bool {
+    let view = PifRecord::new(p);
+    view.other_config().entries().is_some_and(|m| m.is_empty())
+        && view.properties().entries().is_some_and(|m| {
+            m.iter()
+                .all(|(name, value)| name == "gro" && matches!(value.as_str(), Some("on" | "off")))
+        })
+}
 struct Fresh {
     raw: BTreeMap<String, BTreeMap<String, Value>>,
     inventory: crate::Inventory,
@@ -377,15 +388,7 @@ impl Fresh {
             };
             for p in r.driver_interfaces.values() {
                 let (pr, raw) = self.by_id("PIF", p.id.uuid())?;
-                if PifRecord::new(raw)
-                    .other_config()
-                    .entries()
-                    .is_none_or(|m| !m.is_empty())
-                    || PifRecord::new(raw)
-                        .properties()
-                        .entries()
-                        .is_none_or(|m| !m.is_empty())
-                {
+                if !host_default_configuration(raw) {
                     return Err(Error::ResourceInUse);
                 }
                 if self.raw["network_sriov"].values().any(|o| {

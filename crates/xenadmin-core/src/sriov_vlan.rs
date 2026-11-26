@@ -73,7 +73,10 @@ impl SriovVlanUplink {
                 .and_then(|id| i.details.pifs.get(&id))
                 .ok_or(Error::ResourceConflict)?;
             if p.network != Some(target) {
-                preserved.insert(v.id, (v.clone(), p.clone()));
+                preserved.insert(
+                    v.id,
+                    (v.clone(), crate::network_fabric::reviewed_interface(p)),
+                );
             }
         }
         let result = Self {
