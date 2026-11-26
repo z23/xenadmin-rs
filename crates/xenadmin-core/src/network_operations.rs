@@ -180,6 +180,42 @@ fn string_map<'a>(
         .ok_or(Error::Protocol("network settings unavailable"))?;
     Ok(map.clone())
 }
+async fn refuse_unreviewed_sriov_attachment(session: &Session, pif: &Value) -> Result<(), Error> {
+    fn sriov(p: &Value) -> bool {
+        let view = PifRecord::new(p);
+        view.sriov_logical_pif_of()
+            .members()
+            .is_some_and(|v| !v.is_empty())
+            || view
+                .sriov_physical_pif_of()
+                .members()
+                .is_some_and(|v| !v.is_empty())
+    }
+    let mut affected = sriov(pif);
+    if let Some(r) = PifRecord::new(pif)
+        .vlan_master_of()
+        .reference()
+        .filter(|r| *r != "OpaqueRef:NULL")
+    {
+        let vlan = related(session, "VLAN", &json!(r)).await?;
+        affected |= sriov(&related(session, "PIF", VlanRecord::new(&vlan).tagged_pif()).await?);
+    }
+    if let Ok(bonds) = refs(PifRecord::new(pif).bond_master_of()) {
+        for r in bonds {
+            let b = related(session, "Bond", &json!(r)).await?;
+            for r in refs(BondRecord::new(&b).slaves())? {
+                affected |= sriov(&related(session, "PIF", &json!(r)).await?);
+            }
+        }
+    }
+    if affected {
+        Err(Error::Protocol(
+            "SR-IOV attachment changes can reconfigure the NIC driver; this generic interface action has no driver impact review",
+        ))
+    } else {
+        Ok(())
+    }
+}
 pub(super) async fn arguments(
     session: &Session,
     record: &ResourceOperationRecord,
@@ -216,6 +252,7 @@ pub(super) async fn arguments(
             attached,
         } => {
             pif_identity(session, &fresh, expected).await?;
+            refuse_unreviewed_sriov_attachment(session, &fresh).await?;
             if PifRecord::new(&fresh).currently_attached().get() != Some(*expected_attached) {
                 return Err(Error::ResourceConflict);
             }
@@ -233,6 +270,13 @@ pub(super) async fn arguments(
         } => {
             let (parent_ref, pif) = xapi::read(session, ResourceTarget::Pif(*parent)).await?;
             pif_identity(session, &pif, expected).await?;
+            if PifRecord::new(&pif).physical() != true
+                && !refs(PifRecord::new(&pif).bond_master_of()).is_ok_and(|s| !s.is_empty())
+            {
+                return Err(Error::Protocol(
+                    "Use the pool-wide VLAN review for SR-IOV logical interfaces and its explicit driver impact review",
+                ));
+            }
             if number(PifRecord::new(&pif).vlan()) != Some(-1)
                 || PifRecord::new(&pif).bond_slave_of() != "OpaqueRef:NULL"
             {

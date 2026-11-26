@@ -772,6 +772,16 @@ pub fn form_review(m: &mut Model) {
             Form::Vlan { parent, tag } => {
                 let network = w.network.ok_or("Choose the destination network")?;
                 let parent = parent.ok_or("Select a physical interface")?;
+                if i.details
+                    .network_fabric
+                    .sriovs
+                    .values()
+                    .any(|o| o.logical == Some(parent))
+                {
+                    return Err(
+                        "Use Create pool-wide VLANs to review SR-IOV driver impact".into(),
+                    );
+                }
                 let expected = PifIdentity::from_inventory(
                     i.details.pifs.get(&parent).ok_or("Interface disappeared")?,
                 )

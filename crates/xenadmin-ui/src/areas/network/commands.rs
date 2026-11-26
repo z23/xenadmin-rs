@@ -205,7 +205,11 @@ pub fn commands() -> Vec<CommandSpec> {
             })
             .eligibility(|m, _| {
                 on_interface(m, |i, p| {
-                    if workspace::attach(i, p).is_none() {
+                    if crate::areas::network_services::capacity::needs_driver_review(i, p.id) {
+                        Eligibility::disabled(
+                            crate::areas::network_services::capacity::SRIOV_DRIVER_REVIEW,
+                        )
+                    } else if workspace::attach(i, p).is_none() {
                         Eligibility::disabled(INCOMPLETE)
                     } else {
                         Eligibility::enabled_if(workspace::may_change_attachment(p), PROTECTED)

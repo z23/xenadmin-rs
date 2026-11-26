@@ -74,6 +74,7 @@ fn surface(m: &Model, e: &Editor) -> Surface {
             reviewed.unwrap_or(match t.selection {
                 Selection::Create(_) => "Pool-wide VLAN creation",
                 Selection::Retag(_) => "Pool-wide VLAN retagging",
+                Selection::Delete(_) => "Pool-wide VLAN removal",
             }),
         ),
         Draft::Removal(_) => Surface::dialog(
@@ -171,23 +172,29 @@ fn topology_form(t: &topology::Editor, i: &Inventory) -> Vec<Block> {
             i.hosts.len()
         ))
         .key("network-topology-scope"),
-        input(
-            "network-topology-tag",
-            "VLAN tag (0–4094)",
-            &t.tag,
-            drafted(|draft, text| {
-                if let Draft::Topology(t) = draft {
-                    t.tag = text.to_owned();
-                }
-            }),
-        )
-        .on_submit(edit::review),
+        (!matches!(t.selection, Selection::Delete(_))).then(|| {
+            input(
+                "network-topology-tag",
+                "VLAN tag (0–4094)",
+                &t.tag,
+                drafted(|draft, text| {
+                    if let Draft::Topology(t) = draft {
+                        t.tag = text.to_owned();
+                    }
+                }),
+            )
+            .on_submit(edit::review)
+        }),
         match &t.selection {
             Selection::Create(selected) => {
-                let sources = topology::sources(i, t.network);
+                let candidates = topology::candidates(i, t.network);
+                let sources = candidates
+                    .iter()
+                    .filter_map(|(source, uplinks)| Some((*source, uplinks.as_ref().ok()?)))
+                    .collect::<Vec<_>>();
                 let chosen = sources
                     .iter()
-                    .find(|(_, choices)| choices == selected)
+                    .find(|(_, choices)| *choices == selected)
                     .map(|(source, _)| source.to_string());
                 blocks![
                     caption("Choose an uplink network. It must have exactly one managed untagged interface on every pool host."),
@@ -200,14 +207,25 @@ fn topology_form(t: &topology::Editor, i: &Inventory) -> Vec<Block> {
                         pick_uplink,
                     )
                     .label("Uplink network"),
+                    candidates
+                        .iter()
+                        .filter_map(|(source, uplinks)| Some((*source, uplinks.as_ref().err()?)))
+                        .map(|(source, reason)| {
+                            caption(format!("{} cannot be chosen: {reason}", name(i, source)))
+                        })
+                        .collect::<Vec<_>>(),
                     selected
                         .iter()
                         .map(|p| caption(format!("{} · {}", pif_name(i, p.pif), p.pif)))
                         .collect::<Vec<_>>(),
                 ]
             }
-            Selection::Retag(interfaces) => blocks![
-                caption("The captured interfaces will be replaced. Move VM attachments and IP configuration off this network first."),
+            Selection::Retag(interfaces) | Selection::Delete(interfaces) => blocks![
+                caption(if matches!(t.selection, Selection::Delete(_)) {
+                    "The captured interfaces will be removed. Move VM attachments and IP configuration off this network first."
+                } else {
+                    "The captured interfaces will be replaced. Move VM attachments and IP configuration off this network first."
+                }),
                 interfaces
                     .iter()
                     .map(|p| caption(format!(

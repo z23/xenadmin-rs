@@ -11,7 +11,7 @@ use std::{
 };
 use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, NetworkRecord, PifRecord, VlanRecord};
-use xenadmin_xapi::{Call, Int, calls, refs};
+use xenadmin_xapi::{Call, Int, Reads, calls, refs};
 
 pub(super) fn now() -> u64 {
     SystemTime::now()
@@ -44,6 +44,9 @@ fn kinds(operation: &NetworkTopologyOperation) -> Vec<Kind> {
                 tag: *tag,
             })
             .collect(),
+        NetworkTopologyOperation::DeleteVlans { interfaces } => {
+            interfaces.iter().cloned().map(Kind::Destroy).collect()
+        }
         NetworkTopologyOperation::RetagVlans { interfaces, tag } => {
             let mut result = Vec::new();
             for vlan in interfaces {
@@ -104,7 +107,12 @@ pub(crate) fn validate_record(record: &ResourceOperationRecord) -> Result<(), Er
     require(
         plan.pool == record.pool
             && record.target == ResourceTarget::Network(plan.network)
-            && &plan.operation == operation,
+            && &plan.operation == operation
+            && operation.uplinks().iter().all(|p| {
+                p.sriov
+                    .as_ref()
+                    .is_none_or(|s| s.fabric.pool == record.pool)
+            }),
         "network topology plan does not match its intent",
     )?;
     require(
@@ -129,7 +137,9 @@ pub(crate) fn validate_record(record: &ResourceOperationRecord) -> Result<(), Er
             && plan.tasks_before.iter().all(|id| !id.uuid().is_nil()),
         "network topology baseline omits reviewed identities",
     )?;
-    if let NetworkTopologyOperation::RetagVlans { interfaces, .. } = operation {
+    if let NetworkTopologyOperation::RetagVlans { interfaces, .. }
+    | NetworkTopologyOperation::DeleteVlans { interfaces } = operation
+    {
         require(
             interfaces.iter().all(|v| {
                 plan.vlans_before.contains(&v.vlan) && plan.pifs_before.contains(&v.child)
@@ -250,13 +260,38 @@ async fn host_coverage(
     }
     Ok(())
 }
-async fn uplink(session: &Session, review: &VlanUplink) -> Result<(String, Value), Error> {
+/// What an uplink is read for. Before a write, an SR-IOV parent must pass everything the
+/// write needs. Once a write has been made, only what the review said of the parent must
+/// still hold: a result can then be checked after its hosts are back in service.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Write,
+    Result,
+}
+async fn uplink(
+    session: &Session,
+    review: &VlanUplink,
+    purpose: Purpose,
+) -> Result<(String, Value), Error> {
+    if let Some(sriov) = &review.sriov {
+        let result = match purpose {
+            Purpose::Write => super::network_fabric::vlan_uplink(session, sriov).await?,
+            Purpose::Result => super::network_fabric::vlan_parent(session, sriov).await?,
+        };
+        network::pif_identity(session, &result.1, &review.expected).await?;
+        return Ok(result);
+    }
     let (reference, pif) = xapi::read(session, ResourceTarget::Pif(review.pif)).await?;
     network::pif_identity(session, &pif, &review.expected).await?;
+    let view = PifRecord::new(&pif);
     require(
-        PifRecord::new(&pif).managed().get() == Some(true)
-            && network::number(PifRecord::new(&pif).vlan()) == Some(-1)
-            && PifRecord::new(&pif).bond_slave_of() == "OpaqueRef:NULL",
+        view.managed().get() == Some(true)
+            && network::number(view.vlan()) == Some(-1)
+            && view.bond_slave_of() == "OpaqueRef:NULL"
+            && (view.physical() == true
+                || network::refs(view.bond_master_of()).is_ok_and(|v| !v.is_empty()))
+            && (view.sriov_logical_pif_of().raw().is_null()
+                || network::refs(view.sriov_logical_pif_of()).is_ok_and(|v| v.is_empty())),
         "VLAN uplink must be a managed untagged interface or bond master",
     )?;
     Ok((reference, pif))
@@ -277,9 +312,10 @@ async fn retaggable(
     session: &Session,
     network: NetworkId,
     review: &ReviewedVlan,
+    purpose: Purpose,
 ) -> Result<(String, String), Error> {
     let (reference, vlan) = xapi::read(session, ResourceTarget::Vlan(review.vlan)).await?;
-    let (parent, _) = uplink(session, &review.uplink).await?;
+    let (parent, _) = uplink(session, &review.uplink, purpose).await?;
     let (child, pif) = xapi::read(session, ResourceTarget::Pif(review.child)).await?;
     require(
         VlanRecord::new(&vlan).tagged_pif() == parent
@@ -338,7 +374,8 @@ fn expected_members(plan: &Plan, finishing: Option<usize>) -> BTreeSet<PifId> {
             .map(|op| op.review.members.keys().copied().collect())
             .unwrap_or_default(),
         NetworkTopologyOperation::CreateVlans { .. } => BTreeSet::new(),
-        NetworkTopologyOperation::RetagVlans { interfaces, .. } => {
+        NetworkTopologyOperation::RetagVlans { interfaces, .. }
+        | NetworkTopologyOperation::DeleteVlans { interfaces } => {
             interfaces.iter().map(|v| v.child).collect()
         }
     };
@@ -418,21 +455,29 @@ pub(super) async fn prepare(
     };
     let (_, target) = checked_network(session, &plan, None).await?;
     for parent in operation.uplinks() {
-        let (_, pif) = uplink(session, parent).await?;
-        require(
-            network::number(NetworkRecord::new(&target).mtu())
-                .zip(network::number(PifRecord::new(&pif).mtu()))
-                .is_some_and(|(net, pif)| net >= 576 && net <= pif),
-            "The VLAN network MTU must not exceed its uplink MTU",
-        )?;
+        let (_, pif) = uplink(session, parent, Purpose::Write).await?;
+        // A removal creates nothing, so the MTU a new VLAN would need is not its concern.
+        if !matches!(operation, NetworkTopologyOperation::DeleteVlans { .. }) {
+            require(
+                network::number(NetworkRecord::new(&target).mtu())
+                    .zip(network::number(PifRecord::new(&pif).mtu()))
+                    .is_some_and(|(net, pif)| net >= 576 && net <= pif),
+                "The VLAN network MTU must not exceed its uplink MTU",
+            )?;
+        }
         if let NetworkTopologyOperation::CreateVlans { tag, .. } = &operation {
             unused_tag(session, parent.pif, *tag).await?;
         }
     }
     if let NetworkTopologyOperation::RetagVlans { interfaces, tag } = &operation {
         for vlan in interfaces {
-            retaggable(session, network, vlan).await?;
+            retaggable(session, network, vlan, Purpose::Write).await?;
             unused_tag(session, vlan.uplink.pif, *tag).await?;
+        }
+    }
+    if let NetworkTopologyOperation::DeleteVlans { interfaces } = &operation {
+        for vlan in interfaces {
+            retaggable(session, network, vlan, Purpose::Write).await?;
         }
     }
     Ok(plan)
@@ -470,7 +515,7 @@ pub(super) async fn arguments(
             uplink: parent,
             tag,
         } => {
-            let (reference, pif) = uplink(session, parent).await?;
+            let (reference, pif) = uplink(session, parent, Purpose::Write).await?;
             require(
                 network::number(NetworkRecord::new(&target).mtu())
                     .zip(network::number(PifRecord::new(&pif).mtu()))
@@ -486,7 +531,9 @@ pub(super) async fn arguments(
             .task())
         }
         Kind::Destroy(vlan) => Ok(calls::vlan::Destroy(refs::vlan(
-            &retaggable(session, plan.network, vlan).await?.0,
+            &retaggable(session, plan.network, vlan, Purpose::Write)
+                .await?
+                .0,
         ))
         .task()),
         Kind::DetachCreated {
@@ -507,6 +554,7 @@ pub(super) async fn arguments(
                     tag: *tag,
                     attached: true,
                 },
+                Purpose::Write,
             )
             .await?;
             Ok(calls::pif::Unplug(refs::pif(&reference)).task())
@@ -536,7 +584,12 @@ pub(super) async fn creation_identity(
     let id = VlanId::from(network::uuid(&vlan)?);
     let child = network::related(session, "PIF", VlanRecord::new(&vlan).untagged_pif()).await?;
     let child_id = PifId::from(network::uuid(&child)?);
-    let (parent_ref, _) = uplink(session, parent).await?;
+    let (parent_ref, parent_record) = if let Some(sriov) = &parent.sriov {
+        super::network_fabric::vlan_identity(session, sriov).await?
+    } else {
+        uplink(session, parent, Purpose::Result).await?
+    };
+    network::pif_identity(session, &parent_record, &parent.expected).await?;
     require(
         !plan.vlans_before.contains(&id)
             && !plan.pifs_before.contains(&child_id)
@@ -612,6 +665,14 @@ pub(super) async fn verify(
             absent(session, ResourceTarget::Pif(vlan.child)).await?;
         }
     }
+    // The uplink this step changed is still as it was reviewed. The other hosts' uplinks
+    // are read before their own steps and again when the operation finishes.
+    let parent = match &step.kind {
+        Kind::Create { uplink, .. } | Kind::DetachCreated { uplink, .. } => uplink,
+        Kind::Destroy(vlan) => &vlan.uplink,
+        Kind::Fabric(_) => return Err(Error::Journal),
+    };
+    uplink(session, parent, Purpose::Result).await?;
     checked_network(session, plan, Some(index)).await?;
     Ok(None)
 }
@@ -637,7 +698,7 @@ pub(super) async fn finish(
                 "Submitted topology step remains uncertain",
             )?;
             if let Kind::Destroy(vlan) = &step.kind {
-                retaggable(session, plan.network, vlan).await?;
+                retaggable(session, plan.network, vlan, Purpose::Result).await?;
             }
             continue;
         }
@@ -655,6 +716,7 @@ pub(super) async fn finish(
                         tag: *tag,
                         attached: !detached,
                     },
+                    Purpose::Result,
                 )
                 .await?;
             }

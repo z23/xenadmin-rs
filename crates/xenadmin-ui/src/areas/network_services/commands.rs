@@ -31,6 +31,7 @@ pub const SERVICE_TLS: CommandId = CommandId("network.service.nbd-tls");
 pub const SERVICE_PLAINTEXT: CommandId = CommandId("network.service.nbd-plaintext");
 pub const VLAN_CREATE_POOL: CommandId = CommandId("network.vlan.create-pool");
 pub const VLAN_RETAG_POOL: CommandId = CommandId("network.vlan.retag-pool");
+pub const VLAN_DELETE_POOL: CommandId = CommandId("network.vlan.delete-pool");
 pub const FABRIC_ADD: CommandId = CommandId("network.fabric.add");
 pub const FABRIC_COMPLETE_POOL: CommandId = CommandId("network.fabric.complete-pool");
 pub const FABRIC_REMOVE: CommandId = CommandId("network.fabric.remove");
@@ -38,9 +39,10 @@ pub const FABRIC_REMOVE_POOL: CommandId = CommandId("network.fabric.remove-pool"
 
 /// In the order of the local row, after the commands of the `network`
 /// area (10 to 60).
-pub const ALL: [CommandId; 8] = [
+pub const ALL: [CommandId; 9] = [
     VLAN_CREATE_POOL,
     VLAN_RETAG_POOL,
+    VLAN_DELETE_POOL,
     SERVICE_TLS,
     SERVICE_PLAINTEXT,
     FABRIC_ADD,
@@ -66,20 +68,32 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok((pool, _, _)) => connection(m, pool),
                 Err(refusal) => refusal,
             })
-            .invoke(|m, target| open_topology(m, target, false)),
+            .invoke(|m, target| open_topology(m, target, topology::Mode::Create)),
         CommandSpec::new(VLAN_RETAG_POOL.0, "Retag Pool-wide VLANs", AREA)
             .local(TabId::Networking, 120)
             .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, target| match on_network(m, target) {
-                Ok((pool, i, id)) => match topology::capture(&i, id, true) {
+                Ok((pool, i, id)) => match topology::capture(&i, id, topology::Mode::Retag) {
                     Ok(_) => connection(m, pool),
                     // Rune: the error of `open`, shown in the hub.
                     Err(reason) => Eligibility::disabled(reason),
                 },
                 Err(refusal) => refusal,
             })
-            .invoke(|m, target| open_topology(m, target, true)),
+            .invoke(|m, target| open_topology(m, target, topology::Mode::Retag)),
+        CommandSpec::new(VLAN_DELETE_POOL.0, "Remove Pool-wide VLANs", AREA)
+            .local(TabId::Networking, 125)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
+            .context(NETWORK)
+            .eligibility(|m, target| match on_network(m, target) {
+                Ok((pool, i, id)) => match topology::capture(&i, id, topology::Mode::Delete) {
+                    Ok(_) => connection(m, pool),
+                    Err(reason) => Eligibility::disabled(reason),
+                },
+                Err(refusal) => refusal,
+            })
+            .invoke(|m, target| open_topology(m, target, topology::Mode::Delete)),
         CommandSpec::new(SERVICE_TLS.0, "Enable NBD with TLS", AREA)
             .local(TabId::Networking, 130)
             .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
@@ -205,11 +219,11 @@ fn open_service(m: &mut Model, target: &Target, purpose: NetworkServicePurpose) 
     }
 }
 
-fn open_topology(m: &mut Model, target: &Target, changing: bool) {
+fn open_topology(m: &mut Model, target: &Target, mode: topology::Mode) {
     let Ok((pool, i, id)) = on_network(m, target) else {
         return;
     };
-    match topology::capture(&i, id, changing) {
+    match topology::capture(&i, id, mode) {
         Ok(editor) => edit::open(m, pool, id, Draft::Topology(editor)),
         Err(error) => m.error = Some(error),
     }

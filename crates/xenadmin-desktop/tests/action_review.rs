@@ -226,6 +226,11 @@ const REVIEWED: &[Reviewed] = &[
         "a double click or Enter on a network selects it in the tree",
     ),
     view(
+        "tab-networking",
+        "sriov-capacity-*",
+        "reads the host's remaining SR-IOV VF capacity for this record without modifying it",
+    ),
+    view(
         "tab-nics",
         "network-operation-history",
         "shows the Events tab with the history of the pool",

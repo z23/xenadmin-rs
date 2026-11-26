@@ -10,6 +10,8 @@ use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode
 pub struct VlanUplink {
     pub pif: PifId,
     pub expected: PifIdentity,
+    #[serde(default)]
+    pub sriov: Option<Box<crate::SriovVlanUplink>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewedVlan {
@@ -26,6 +28,9 @@ pub enum NetworkTopologyOperation {
         uplinks: Vec<VlanUplink>,
         tag: u16,
     },
+    DeleteVlans {
+        interfaces: Vec<ReviewedVlan>,
+    },
     RetagVlans {
         interfaces: Vec<ReviewedVlan>,
         tag: u16,
@@ -35,6 +40,9 @@ impl NetworkTopologyOperation {
     pub fn permission_requirements(&self) -> crate::PermissionRequirements {
         if let Self::Fabric(op) = self {
             return op.permission_requirements();
+        }
+        if matches!(self, Self::DeleteVlans { .. }) {
+            return crate::PermissionRequirements::writes(["VLAN.destroy"]);
         }
         let mut methods = vec!["VLAN.create"];
         if let Self::RetagVlans { interfaces, .. } = self {
@@ -51,18 +59,21 @@ impl NetworkTopologyOperation {
             Self::Fabric(op) => op.label(),
             Self::CreateVlans { .. } => "Create pool-wide VLAN interfaces",
             Self::RetagVlans { .. } => "Retag pool-wide VLAN interfaces",
+            Self::DeleteVlans { .. } => "Remove pool-wide VLAN interfaces",
         }
     }
     pub(crate) fn uplinks(&self) -> Vec<&VlanUplink> {
         match self {
             Self::Fabric(_) => vec![],
             Self::CreateVlans { uplinks, .. } => uplinks.iter().collect(),
-            Self::RetagVlans { interfaces, .. } => interfaces.iter().map(|v| &v.uplink).collect(),
+            Self::RetagVlans { interfaces, .. } | Self::DeleteVlans { interfaces } => {
+                interfaces.iter().map(|v| &v.uplink).collect()
+            }
         }
     }
     pub(crate) fn tag(&self) -> u16 {
         match self {
-            Self::Fabric(_) => 0,
+            Self::Fabric(_) | Self::DeleteVlans { .. } => 0,
             Self::CreateVlans { tag, .. } | Self::RetagVlans { tag, .. } => *tag,
         }
     }
@@ -94,16 +105,36 @@ impl NetworkTopologyOperation {
         {
             return Err(Error::InvalidResourceCommand);
         }
-        if let Self::RetagVlans { interfaces, tag } = self
-            && (interfaces
+        let mut hardware = None;
+        for p in &uplinks {
+            if let Some(s) = &p.sriov {
+                s.validate(p.pif, network)?;
+                let pci = s
+                    .fabric
+                    .hardware
+                    .as_ref()
+                    .ok_or(Error::InvalidResourceCommand)?;
+                let kind = (&pci.vendor_id, &pci.device_id);
+                if hardware.is_some_and(|old| old != kind) {
+                    return Err(Error::InvalidResourceCommand);
+                }
+                hardware = Some(kind);
+            }
+        }
+        if hardware.is_some() && uplinks.iter().any(|p| p.sriov.is_none()) {
+            return Err(Error::InvalidResourceCommand);
+        }
+        if let Self::RetagVlans { interfaces, .. } | Self::DeleteVlans { interfaces } = self
+            && (interfaces.iter().any(|v| {
+                v.tag > 4094
+                    || matches!(self, Self::RetagVlans { tag, .. } if v.tag == *tag)
+                    || v.child == v.uplink.pif
+            }) || interfaces
                 .iter()
-                .any(|v| v.tag > 4094 || v.tag == *tag || v.child == v.uplink.pif)
-                || interfaces
-                    .iter()
-                    .map(|v| v.vlan)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != interfaces.len()
+                .map(|v| v.vlan)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != interfaces.len()
                 || interfaces
                     .iter()
                     .map(|v| v.child)
@@ -165,6 +196,17 @@ impl NetworkTopologyOperation {
         }) {
             return ActionAvailability::Stale;
         }
+        for p in &uplinks {
+            match crate::SriovVlanUplink::capture(inventory, p.pif, network) {
+                Ok(s) if s.as_ref() == p.sriov.as_deref() => {}
+                Ok(_) => return ActionAvailability::Stale,
+                Err(e) => {
+                    return ActionAvailability::Prerequisite {
+                        reason: e.to_string(),
+                    };
+                }
+            }
+        }
         if inventory
             .details
             .vifs
@@ -189,7 +231,7 @@ impl NetworkTopologyOperation {
                     reason: "Choose a network with no host interfaces, or review retagging its existing VLAN interfaces".into(),
                 };
             }
-            Self::RetagVlans { interfaces, .. } => {
+            Self::RetagVlans { interfaces, .. } | Self::DeleteVlans { interfaces } => {
                 if members != interfaces.iter().map(|v| v.child).collect() {
                     return ActionAvailability::Stale;
                 }

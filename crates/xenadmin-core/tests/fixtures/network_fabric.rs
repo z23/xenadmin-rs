@@ -1,3 +1,5 @@
+#[path = "sriov_capacity.rs"]
+mod capacity;
 #[path = "network_fabric_pool.rs"]
 mod pool;
 use super::*;
@@ -98,6 +100,9 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
             let method = request["method"].as_str().unwrap();
             let pool_fixture = records.lock().unwrap().contains_key("_pool");
             if pool_fixture && let Some(reply) = pool::request(&records, &writes, &request).await {
+                return Some(reply);
+            }
+            if let Some(reply) = capacity::request(&records, &request).await {
                 return Some(reply);
             }
             if method == "event.from" && request["params"][2] == "" {
@@ -486,6 +491,66 @@ async fn deletion_removes_only_reviewed_host_pair_and_retains_underlay_and_netwo
         assert!(map.contains_key("PIF"));
         assert!(map.contains_key("network"));
         assert_eq!(writes.load(Ordering::SeqCst), 2);
+    }
+}
+#[tokio::test]
+async fn creation_and_removal_accept_an_interface_as_a_host_reports_it() {
+    // A physical interface links a metrics record, which the records read before a write
+    // do not include, and carries the receive-offload property XAPI gives each one.
+    // Neither is something a review left out.
+    for kind in [Kind::Tunnel(TunnelProtocol::Gre), Kind::Sriov] {
+        let (m, records, writes) = fixture(kind, Fault::None).await;
+        {
+            let mut map = records.lock().unwrap();
+            map.insert(
+                "PIF_metrics".into(),
+                json!({"uuid":"00000000-0000-0000-0000-000000000004","carrier":true,"speed":"10000","duplex":true,"vendor_id":"8086","vendor_name":"Fixture","device_id":"100e","device_name":"Fixture NIC","pci_bus_path":"0000:01:00.1"}),
+            );
+            let physical = map.get_mut("PIF").unwrap();
+            physical["metrics"] = json!("OpaqueRef:PIF_metrics");
+            physical["properties"] = json!({"gro":"on"});
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let b = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&m, &b, false).await;
+        assert!(
+            c.latest().inventory().unwrap().details.pifs[&PifId::parse(PIF).unwrap()]
+                .metrics
+                .is_some()
+        );
+        let first = finish(&submit(&c, create(&c, kind))).await;
+        assert_eq!(first.state, OperationState::Succeeded, "{}", first.detail);
+        c.close().await;
+        let c = connect(&m, &b, false).await;
+        let object = first.network_fabric_created.as_ref().unwrap().object;
+        let op = Operation::capture(
+            c.latest().inventory().unwrap(),
+            NetworkId::parse(NET).unwrap(),
+            PifId::parse(PIF).unwrap(),
+            kind,
+            Change::Delete(object),
+        )
+        .unwrap();
+        let result = finish(&submit(&c, op)).await;
+        assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+    }
+}
+#[tokio::test]
+async fn sriov_creation_refuses_a_same_driver_interface_somebody_configured() {
+    for (field, value) in [
+        ("properties", json!({"gro":"on","tso":"off"})),
+        ("other_config", json!({"ethtool-speed":"1000"})),
+    ] {
+        let (m, records, writes) = fixture(Kind::Sriov, Fault::None).await;
+        let dir = tempfile::tempdir().unwrap();
+        let b = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&m, &b, false).await;
+        let op = create(&c, Kind::Sriov);
+        records.lock().unwrap().get_mut("PIF").unwrap()[field] = value.clone();
+        let r = finish(&submit(&c, op)).await;
+        assert_eq!(r.state, OperationState::Rejected, "{field}: {}", r.detail);
+        assert_eq!(writes.load(Ordering::SeqCst), 0, "{field}");
     }
 }
 #[tokio::test]

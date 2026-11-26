@@ -478,6 +478,8 @@ fn form(m: &Model, w: &Workspace, i: &Inventory) -> Vec<Block> {
                 .values()
                 .filter(|p| {
                     p.vlan == Some(-1)
+                        && (p.physical == Some(true)
+                            || i.details.bonds.values().any(|b| b.master == Some(p.id)))
                         && w.host.is_none_or(|id| p.host == Some(id))
                         && p.network != w.network
                 })

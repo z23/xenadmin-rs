@@ -1261,7 +1261,7 @@ fn the_networking_tab_of_a_network_shows_services_and_coverage() {
     h.open_tab(TabId::Networking);
     assert!(h.has_text("Network services"));
     assert!(h.has_text("Tunnel and SR-IOV coverage"));
-    let theirs = crate::areas::network_services::networking_sections(&i, network);
+    let theirs = crate::areas::network_services::networking_sections(&h.model, i.pool_id, &i, network);
     assert!(!theirs.is_empty());
     let blocks = h.tab().blocks();
     let nodes = crate::surface::flatten_blocks("tab", &blocks);
