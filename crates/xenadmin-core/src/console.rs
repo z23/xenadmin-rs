@@ -19,6 +19,14 @@ pub use typing::{MAX_TYPED_TEXT, TypedText};
 const MAX_PIXELS: usize = 8_294_400;
 /// Minimum interval between published frames / incremental refresh requests (~30 Hz).
 const FRAME_PACE: Duration = Duration::from_millis(33);
+/// How long a refresh request may go unanswered before it is repeated. A server answers a
+/// request only when the screen changes, so a console showing a still picture would
+/// otherwise write nothing, and a connection that has silently gone away is seen to have
+/// failed only after something is written to it. The protocol lets a server answer several
+/// requests with one update, so the repeat asks for nothing more.
+const IDLE_REFRESH: Duration = Duration::from_secs(5);
+/// Events applied from the queue before cancellation is looked at again.
+const DRAIN_CHECK: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConsoleState {
@@ -277,6 +285,7 @@ impl ConsoleRequest {
         let mut updates_rx = client.framebuffer_updates();
         // `VncClient::new` dispatches the initial non-incremental FramebufferUpdateRequest.
         let mut refresh_in_flight = true;
+        let opened = tokio::time::Instant::now();
         let mut dirty_pixels = false;
         let mut last_publish: Option<tokio::time::Instant> = None;
         let mut last_refresh_sent: Option<tokio::time::Instant> = None;
@@ -299,6 +308,7 @@ impl ConsoleRequest {
                     None => std::future::pending().await,
                 }
             };
+            let idle_due = last_refresh_sent.unwrap_or(opened) + IDLE_REFRESH;
             let mut metadata_changed = false;
             let mut frame_completed = false;
             let mut force_flush = false;
@@ -389,52 +399,40 @@ impl ConsoleRequest {
                     };
                     dirty_pixels |= pixels;
                     metadata_changed |= meta;
-                    loop {
-                        match client.poll_event().await {
-                            Ok(Some(next)) => {
-                                let (pixels, meta) = match apply_vnc_event(
-                                    next,
-                                    &client,
-                                    &mut buffer,
-                                    &mut snapshot,
-                                    &mut clipboard,
-                                )
-                                .await
-                                {
-                                    Ok(flags) => flags,
-                                    Err(error) => break 'running Err(error),
-                                };
-                                dirty_pixels |= pixels;
-                                metadata_changed |= meta;
-                            }
-                            Ok(None) => break,
-                            Err(_) => break 'running Err(Error::ConsoleProtocol),
+                    match drain_vnc_events(
+                        &client,
+                        &mut buffer,
+                        &mut snapshot,
+                        &mut clipboard,
+                        &self.cancel,
+                    )
+                    .await
+                    {
+                        Ok(Some((pixels, meta))) => {
+                            dirty_pixels |= pixels;
+                            metadata_changed |= meta;
                         }
+                        Ok(None) => break 'running Ok(()),
+                        Err(error) => break 'running Err(error),
                     }
                     if updates_rx.has_changed().unwrap_or(false) {
                         let _ = updates_rx.borrow_and_update();
                         frame_completed = true;
-                        loop {
-                            match client.poll_event().await {
-                                Ok(Some(next)) => {
-                                    let (pixels, meta) = match apply_vnc_event(
-                                        next,
-                                        &client,
-                                        &mut buffer,
-                                        &mut snapshot,
-                                        &mut clipboard,
-                                    )
-                                    .await
-                                    {
-                                        Ok(flags) => flags,
-                                        Err(error) => break 'running Err(error),
-                                    };
-                                    dirty_pixels |= pixels;
-                                    metadata_changed |= meta;
-                                }
-                                Ok(None) => break,
-                                Err(_) => break 'running Err(Error::ConsoleProtocol),
+                        match drain_vnc_events(
+                            &client,
+                            &mut buffer,
+                            &mut snapshot,
+                            &mut clipboard,
+                            &self.cancel,
+                        )
+                        .await
+                        {
+                            Ok(Some((pixels, meta))) => {
+                                dirty_pixels |= pixels;
+                                metadata_changed |= meta;
                             }
+                            Ok(None) => break 'running Ok(()),
+                            Err(error) => break 'running Err(error),
                         }
                     }
                 }
@@ -443,27 +441,21 @@ impl ConsoleRequest {
                         break Err(Error::ConsoleProtocol);
                     }
                     frame_completed = true;
-                    loop {
-                        match client.poll_event().await {
-                            Ok(Some(next)) => {
-                                let (pixels, meta) = match apply_vnc_event(
-                                    next,
-                                    &client,
-                                    &mut buffer,
-                                    &mut snapshot,
-                                    &mut clipboard,
-                                )
-                                .await
-                                {
-                                    Ok(flags) => flags,
-                                    Err(error) => break 'running Err(error),
-                                };
-                                dirty_pixels |= pixels;
-                                metadata_changed |= meta;
-                            }
-                            Ok(None) => break,
-                            Err(_) => break 'running Err(Error::ConsoleProtocol),
+                    match drain_vnc_events(
+                        &client,
+                        &mut buffer,
+                        &mut snapshot,
+                        &mut clipboard,
+                        &self.cancel,
+                    )
+                    .await
+                    {
+                        Ok(Some((pixels, meta))) => {
+                            dirty_pixels |= pixels;
+                            metadata_changed |= meta;
                         }
+                        Ok(None) => break 'running Ok(()),
+                        Err(error) => break 'running Err(error),
                     }
                 }
                 _ = flush_sleep, if dirty_pixels && flush_due.is_some() => {
@@ -476,6 +468,13 @@ impl ConsoleRequest {
                         break Err(Error::ConsoleProtocol);
                     }
                     refresh_in_flight = true;
+                    last_refresh_sent = Some(tokio::time::Instant::now());
+                    continue;
+                }
+                _ = tokio::time::sleep_until(idle_due), if refresh_in_flight => {
+                    if client.input(X11Event::Refresh).await.is_err() {
+                        break Err(Error::ConsoleProtocol);
+                    }
                     last_refresh_sent = Some(tokio::time::Instant::now());
                     continue;
                 }
@@ -577,6 +576,34 @@ async fn host_reference(
         return Err(Error::Stale);
     }
     Ok(vm_ref.into_string())
+}
+
+/// Applies every event that is already queued and says whether pixels and whether
+/// metadata changed. `None` means the console was cancelled while the queue stayed full:
+/// a server that never stops sending cannot keep a closed console running.
+async fn drain_vnc_events(
+    client: &vnc::VncClient,
+    buffer: &mut Framebuffer,
+    snapshot: &mut ConsoleSnapshot,
+    clipboard: &mut clipboard::Clipboard,
+    cancel: &CancellationToken,
+) -> Result<Option<(bool, bool)>, Error> {
+    let mut changed = (false, false);
+    let mut applied = 0usize;
+    while let Some(event) = client
+        .poll_event()
+        .await
+        .map_err(|_| Error::ConsoleProtocol)?
+    {
+        let (pixels, meta) = apply_vnc_event(event, client, buffer, snapshot, clipboard).await?;
+        changed.0 |= pixels;
+        changed.1 |= meta;
+        applied += 1;
+        if applied.is_multiple_of(DRAIN_CHECK) && cancel.is_cancelled() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(changed))
 }
 
 async fn apply_vnc_event(

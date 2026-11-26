@@ -636,6 +636,143 @@ async fn console_paces_idle_refresh_and_drains_multi_rect_updates() {
 }
 
 #[tokio::test]
+async fn an_idle_console_repeats_its_refresh_request() {
+    // A server answers a refresh request only when the screen changes. A console that
+    // waited for the answer and wrote nothing would never see that its connection had
+    // gone away, so it repeats the request while the picture stays the same.
+    use xenadmin_core::ConsoleState;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let location = format!(
+        "http://{}/console?ref=OpaqueRef:console",
+        listener.local_addr().unwrap()
+    );
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed_requests = requests.clone();
+    let rfb = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(stream.read_u8().await.unwrap());
+            assert!(header.len() < 16384);
+        }
+        stream
+            .write_all(b"HTTP/1.0 200 OK\r\n\r\nRFB 003.003\n")
+            .await
+            .unwrap();
+        let mut version = [0; 12];
+        stream.read_exact(&mut version).await.unwrap();
+        stream.write_u32(1).await.unwrap();
+        assert_eq!(stream.read_u8().await.unwrap(), 1);
+        // 1x1 framebuffer, 32bpp RGBA wire format
+        stream
+            .write_all(&[
+                0, 1, 0, 1, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0, 0, 0, 0, 4,
+                b'T', b'e', b's', b't',
+            ])
+            .await
+            .unwrap();
+        while let Ok(kind) = stream.read_u8().await {
+            match kind {
+                0 => {
+                    let mut format = [0; 19];
+                    stream.read_exact(&mut format).await.unwrap();
+                }
+                2 => {
+                    stream.read_u8().await.unwrap();
+                    let count = stream.read_u16().await.unwrap();
+                    let mut encodings = vec![0; usize::from(count) * 4];
+                    stream.read_exact(&mut encodings).await.unwrap();
+                }
+                3 => {
+                    let mut request = [0; 9];
+                    stream.read_exact(&mut request).await.unwrap();
+                    let first = {
+                        let mut requests = observed_requests.lock().unwrap();
+                        requests.push(request[0] == 1);
+                        requests.len() == 1
+                    };
+                    if first {
+                        // One raw 1x1 rectangle. Later requests are left unanswered,
+                        // as a server leaves them while the screen does not change.
+                        stream
+                            .write_all(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0])
+                            .await
+                            .unwrap();
+                        stream.write_all(&[10, 20, 30, 0]).await.unwrap();
+                    }
+                }
+                4 => {
+                    let mut key = [0; 7];
+                    stream.read_exact(&mut key).await.unwrap();
+                }
+                5 => {
+                    let mut pointer = [0; 5];
+                    stream.read_exact(&mut pointer).await.unwrap();
+                }
+                other => panic!("Unexpected RFB client message {other}"),
+            }
+        }
+    });
+    let server = mock_console(false, false, Some(location)).await;
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture-password".into()),
+    );
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
+    let console = connection
+        .open_console(
+            connection
+                .latest()
+                .observe_vm(inventory.guests().next().unwrap().id)
+                .unwrap(),
+        )
+        .unwrap();
+    // The first frame arrives, and the console asks once for what changes after it. The
+    // frame is published before that request is written, so the count is read first.
+    let first_snapshot = tokio::time::timeout(deadline(5), async {
+        loop {
+            let asked = requests.lock().unwrap().len();
+            let snapshot = console.latest();
+            if let ConsoleState::Failed(error) = &snapshot.state {
+                panic!("{error}");
+            }
+            if asked == 2 && snapshot.frame.is_some() {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(first_snapshot.state, ConsoleState::Connected);
+    assert_eq!(
+        *first_snapshot.frame.as_ref().unwrap().rgba,
+        [10, 20, 30, 255]
+    );
+    // Nothing changes on the screen, and the request is repeated all the same.
+    tokio::time::timeout(deadline(15), async {
+        while requests.lock().unwrap().len() == 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let observed = requests.lock().unwrap().clone();
+    // The first request is for the whole screen; each later one is incremental. One
+    // repeat arrives after the pause, not a stream of them.
+    assert!(!observed[0]);
+    assert!(observed[1..].iter().all(|incremental| *incremental));
+    assert!(observed.len() <= 4, "{} requests", observed.len());
+    // The repeat publishes nothing and leaves the console as it was.
+    assert!(Arc::ptr_eq(&first_snapshot, &console.latest()));
+    console.close();
+    connection.disconnect();
+    let _ = tokio::time::timeout(deadline(2), rfb).await;
+}
+
+#[tokio::test]
 async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
     authenticated_console_roundtrip(false).await;
 }
