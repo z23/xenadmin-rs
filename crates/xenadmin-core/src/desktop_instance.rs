@@ -17,6 +17,11 @@ use tokio_util::sync::CancellationToken;
 const LIMIT: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_millis(500);
 const SOCKET: &str = "desktop-activate.sock";
+/// Where the listener is bound before it is renamed to `SOCKET`. A socket path is limited
+/// to 107 bytes, so this name is no longer than `SOCKET`: a state directory that has room
+/// for the socket has room for its staging name too.
+const STAGING: &str = ".desktop-activate.tmp";
+const _: () = assert!(STAGING.len() <= SOCKET.len());
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,7 +195,7 @@ impl DesktopInstance {
             }
             fs::remove_file(&path)?;
         }
-        let tmp = self.directory.join(format!(".{SOCKET}.tmp"));
+        let tmp = self.directory.join(STAGING);
         if let Ok(stale) = fs::symlink_metadata(&tmp) {
             if !stale.file_type().is_socket() || stale.uid() != owner {
                 return Err(io::Error::new(
