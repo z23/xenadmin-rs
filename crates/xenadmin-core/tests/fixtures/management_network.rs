@@ -84,14 +84,22 @@ async fn bridge(
     let good = acceptor(cert);
     let coordinator_tls = acceptor(coordinator);
     let bad = acceptor(&rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap());
-    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = first.local_addr().unwrap().port();
-    let listeners = vec![
-        first,
-        TcpListener::bind(("127.0.0.2", port)).await.unwrap(),
-        TcpListener::bind(("127.0.0.3", port)).await.unwrap(),
-        TcpListener::bind(("::1", port)).await.unwrap(),
-    ];
+    let (port, listeners) = {
+        let mut bound = None;
+        for _ in 0..32 {
+            let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = first.local_addr().unwrap().port();
+            if let (Ok(second), Ok(third), Ok(fourth)) = (
+                TcpListener::bind(("127.0.0.2", port)).await,
+                TcpListener::bind(("127.0.0.3", port)).await,
+                TcpListener::bind(("::1", port)).await,
+            ) {
+                bound = Some((port, vec![first, second, third, fourth]));
+                break;
+            }
+        }
+        bound.expect("loopback bridge port")
+    };
     let target = url::Url::parse(mock.endpoint.as_str())
         .unwrap()
         .socket_addrs(|| None)

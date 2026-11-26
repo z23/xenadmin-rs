@@ -5,7 +5,7 @@ use xenadmin_xapi::records::{BondRecord, PifRecord, VlanRecord};
 use xenadmin_xapi::{Reads, kind};
 
 pub(crate) struct ManagementTopologyRecords {
-    store: Store,
+    raw: BTreeMap<String, BTreeMap<String, Value>>,
     details: crate::InventoryDetails,
 }
 fn require(ok: bool) -> Result<(), Error> {
@@ -58,6 +58,7 @@ fn references<'a>(
 impl ManagementTopologyRecords {
     pub(crate) async fn read(s: &Session) -> Result<Self, Error> {
         let mut store = Store::default();
+        let mut raw: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
         for class in ["host", "network", "PIF", "Bond", "VLAN"] {
             let value = s.call(&format!("{class}.get_all_records"), vec![]).await?;
             let values = value
@@ -75,13 +76,21 @@ impl ManagementTopologyRecords {
                     .ok_or(Error::Protocol("Management topology UUID unavailable"))?;
                 require(!id.is_nil() && ids.insert(id))?;
             }
-            store.records.insert(
-                class.to_ascii_lowercase(),
+            let key = class.to_ascii_lowercase();
+            raw.insert(
+                key.clone(),
                 values.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             );
-            store
-                .classes
-                .insert(class.to_ascii_lowercase(), ClassAvailability::Available);
+            store.records.insert(
+                key.clone(),
+                Arc::new(
+                    values
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+                        .collect(),
+                ),
+            );
+            store.classes.insert(key, ClassAvailability::Available);
         }
         // Check both directions before the ordinary inventory decoder resolves references.
         // Its partial optional-class projection must not hide missing topology relationships.
@@ -89,7 +98,7 @@ impl ManagementTopologyRecords {
         let mut bonds_by_member: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         let mut vlan_by_child: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         let mut vlans_by_parent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for (r, b) in &store.records["bond"] {
+        for (r, b) in &raw["bond"] {
             let view = BondRecord::new(b);
             let master = reference(view.master(), "pif", &store, false)?.unwrap();
             let slaves = references(view.slaves(), "pif", &store)?;
@@ -102,7 +111,7 @@ impl ManagementTopologyRecords {
                 bonds_by_member.entry(slave).or_default().insert(r);
             }
         }
-        for (r, v) in &store.records["vlan"] {
+        for (r, v) in &raw["vlan"] {
             let view = VlanRecord::new(v);
             let parent = reference(view.tagged_pif(), "pif", &store, false)?.unwrap();
             let child = reference(view.untagged_pif(), "pif", &store, false)?.unwrap();
@@ -110,7 +119,7 @@ impl ManagementTopologyRecords {
             vlan_by_child.entry(child).or_default().insert(r);
         }
         let empty = BTreeSet::new();
-        for (r, p) in &store.records["pif"] {
+        for (r, p) in &raw["pif"] {
             let view = PifRecord::new(p);
             reference(view.host(), "host", &store, false)?;
             reference(view.network(), "network", &store, false)?;
@@ -145,7 +154,7 @@ impl ManagementTopologyRecords {
             }))?;
         }
         let details = inventory::decode(&store);
-        Ok(Self { store, details })
+        Ok(Self { raw, details })
     }
     pub(crate) fn topology(&self, root: PifId) -> Result<ManagementTopology, Error> {
         let t = ManagementTopology::capture(&self.details, root).ok_or(Error::Protocol(
@@ -162,7 +171,7 @@ impl ManagementTopologyRecords {
             ] {
                 require(uses.members().is_some_and(|v| v.is_empty()))?;
             }
-            let network = self.store.records["network"]
+            let network = self.raw["network"]
                 .get(p.network().reference().unwrap())
                 .map(NetworkRecord::new)
                 .ok_or(Error::ResourceConflict)?;
@@ -184,9 +193,9 @@ impl ManagementTopologyRecords {
             .ok_or(Error::ResourceConflict)
     }
     pub(crate) fn records(&self, class: &str) -> &BTreeMap<String, Value> {
-        &self.store.records[class]
+        &self.raw[class]
     }
     pub(crate) fn pifs(&self) -> &BTreeMap<String, Value> {
-        &self.store.records["pif"]
+        &self.raw["pif"]
     }
 }

@@ -319,3 +319,49 @@ fn desktop_lock_remains_held_after_guard_drop_until_process_exit() {
             .is_some()
     );
 }
+
+#[test]
+fn desktop_activation_binds_in_the_longest_directory_its_socket_name_fits() {
+    // A socket path holds 107 bytes. The listener is bound under a staging name first,
+    // so that name must fit wherever the socket itself fits.
+    let dir = tempfile::tempdir().unwrap();
+    let used = dir.path().as_os_str().len() + 1 + 1 + SOCKET.len();
+    let Some(room) = 107usize.checked_sub(used).filter(|room| *room > 0) else {
+        // The temporary directory is already too deep for any socket.
+        return;
+    };
+    let path = dir.path().join("d".repeat(room));
+    assert_eq!(socket(&path).as_os_str().len(), 107);
+    let mut owner = DesktopInstance::acquire(path.clone()).unwrap().unwrap();
+    let (tx, rx) = mpsc::channel();
+    owner
+        .start_activation(Arc::new(move |token| {
+            tx.send(token).unwrap();
+        }))
+        .unwrap();
+    assert_eq!(fs::metadata(socket(&path)).unwrap().mode() & 0o777, 0o600);
+    assert!(!path.join(STAGING).exists());
+    activate_desktop(&path, None).unwrap();
+    assert_eq!(rx.recv_timeout(TIMEOUT).unwrap(), None);
+}
+
+#[test]
+fn desktop_activation_replaces_a_stale_staging_socket_and_keeps_any_other_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let staging = dir.path().join(STAGING);
+    drop(std::os::unix::net::UnixListener::bind(&staging).unwrap());
+    let mut owner = DesktopInstance::acquire(dir.path().into())
+        .unwrap()
+        .unwrap();
+    owner.start_activation(Arc::new(|_| {})).unwrap();
+    assert!(!staging.exists());
+    activate_desktop(dir.path(), None).unwrap();
+    drop(owner);
+    fs::write(&staging, b"retained file").unwrap();
+    let mut owner = DesktopInstance::acquire(dir.path().into())
+        .unwrap()
+        .unwrap();
+    assert!(owner.start_activation(Arc::new(|_| {})).is_err());
+    assert_eq!(fs::read(&staging).unwrap(), b"retained file");
+    assert!(!socket(dir.path()).exists());
+}

@@ -1610,6 +1610,9 @@ async fn run(
                             continue;
                         }
                         Some(request)=requests.recv()=>{
+                            while discoveries.try_join_next().is_some() {}
+                            while metrics.try_join_next().is_some() {}
+                            while diagnostics.try_join_next().is_some() {}
                             match request {
                                 Request::ResourceSubmit(request)=>{
                                     if operations::Journal::open(&directory).and_then(|j|j.workflow_owner(request.record.id)).map_or(true,|p|p.is_some()) {request.reject(Error::OperationConflict);}
@@ -1789,7 +1792,9 @@ async fn run(
                         batch.rebuild();
                         rebuilding = false;
                     }
+                    let mut hosts_touched = false;
                     for host in batch.touched("host") {
+                        hosts_touched = true;
                         *host_events.entry(host.to_owned()).or_default() += 1;
                     }
                     if !batch.events.is_empty() || token.is_empty() {
@@ -1815,13 +1820,12 @@ async fn run(
                                     }
                                 }
                                 expected_pool = Some(inventory.pool_id);
+                                let session_endpoint = session.options().endpoint.clone();
+                                let session_route =
+                                    session.options().connection_route(&session_endpoint).ok();
+                                let mut verified_members = sender.borrow().verified_members.clone();
+                                if token.is_empty() || hosts_touched || verified_members.is_empty()
                                 {
-                                    let mut snapshot = (*sender.borrow().clone()).clone();
-                                    snapshot.endpoint = Some(session.options().endpoint.clone());
-                                    snapshot.route = session
-                                        .options()
-                                        .connection_route(&session.options().endpoint)
-                                        .ok();
                                     // Every pool member whose certificate this connection can
                                     // already verify is a remembered endpoint for failover,
                                     // so a coordinator loss can be followed to a surviving
@@ -1847,14 +1851,14 @@ async fn run(
                                         })
                                         .take(128)
                                         .collect::<Vec<_>>();
-                                    for endpoint in [&options.endpoint, &session.options().endpoint]
+                                    for endpoint in [&options.endpoint, &session_endpoint]
                                         .into_iter()
                                         .chain(members.iter())
                                     {
-                                        if snapshot.verified_members.len() < 128
-                                            && !snapshot.verified_members.contains(endpoint)
+                                        if verified_members.len() < 128
+                                            && !verified_members.contains(endpoint)
                                         {
-                                            snapshot.verified_members.push(endpoint.clone());
+                                            verified_members.push(endpoint.clone());
                                         }
                                         if options.fallback_endpoints.len() < 128
                                             && !options.fallback_endpoints.contains(endpoint)
@@ -1862,15 +1866,13 @@ async fn run(
                                             options.fallback_endpoints.push(endpoint.clone());
                                         }
                                     }
-                                    sender.send_replace(Arc::new(snapshot));
                                 }
                                 match context.claim(inventory.pool_id) {
                                     Ok(Some(target)) => {
-                                        let endpoints = sender.borrow().verified_members.clone();
                                         let _ = target
                                             .route
                                             .requests
-                                            .try_send(Request::RememberMembers(endpoints));
+                                            .try_send(Request::RememberMembers(verified_members));
                                         active.cancel();
                                         let _ = tokio::time::timeout(
                                             Duration::from_secs(3),
@@ -1976,14 +1978,23 @@ async fn run(
                                 last_inventory = Some(Arc::new(inventory));
                                 last_update = Some(SystemTime::now());
                                 backoff = 1;
-                                publish(
-                                    &sender,
+                                let previous = sender.borrow().clone();
+                                sender.send_replace(Arc::new(ConnectionSnapshot {
+                                    permissions: if generation == previous.generation {
+                                        previous.permissions.clone()
+                                    } else {
+                                        crate::SessionPermissions::default()
+                                    },
                                     generation,
-                                    ConnectionState::Ready,
-                                    &last_inventory,
-                                    journal_error.clone(),
-                                    last_update,
-                                );
+                                    state: ConnectionState::Ready,
+                                    inventory: last_inventory.clone(),
+                                    error: journal_error.clone(),
+                                    failure: None,
+                                    route: session_route,
+                                    updated_at: last_update,
+                                    endpoint: Some(session_endpoint),
+                                    verified_members,
+                                }));
                             }
                             Err(error) => break Some(error),
                         }

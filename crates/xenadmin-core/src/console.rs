@@ -17,6 +17,16 @@ mod typing;
 pub use typing::{MAX_TYPED_TEXT, TypedText};
 
 const MAX_PIXELS: usize = 8_294_400;
+/// Minimum interval between published frames / incremental refresh requests (~30 Hz).
+const FRAME_PACE: Duration = Duration::from_millis(33);
+/// How long a refresh request may go unanswered before it is repeated. A server answers a
+/// request only when the screen changes, so a console showing a still picture would
+/// otherwise write nothing, and a connection that has silently gone away is seen to have
+/// failed only after something is written to it. The protocol lets a server answer several
+/// requests with one update, so the repeat asks for nothing more.
+const IDLE_REFRESH: Duration = Duration::from_secs(5);
+/// Events applied from the queue before cancellation is looked at again.
+const DRAIN_CHECK: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConsoleState {
@@ -272,13 +282,36 @@ impl ConsoleRequest {
         let mut held = BTreeMap::new();
         let mut clipboard = clipboard::Clipboard::default();
         let mut snapshot = self.sender.borrow().as_ref().clone();
-        let mut refresh = tokio::time::interval(Duration::from_millis(33));
-        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut updates_rx = client.framebuffer_updates();
+        // `VncClient::new` dispatches the initial non-incremental FramebufferUpdateRequest.
+        let mut refresh_in_flight = true;
+        let opened = tokio::time::Instant::now();
+        let mut dirty_pixels = false;
+        let mut last_publish: Option<tokio::time::Instant> = None;
+        let mut last_refresh_sent: Option<tokio::time::Instant> = None;
+        let mut flush_due: Option<tokio::time::Instant> = None;
+        let mut refresh_due: Option<tokio::time::Instant> = None;
         // A text being typed: what is left of it, sent a character at a time.
         let mut typed: std::collections::VecDeque<typing::Stroke> = Default::default();
         let mut pace = tokio::time::interval(typing::PACE);
         pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let result = 'running: loop {
+            let flush_sleep = async {
+                match flush_due {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let refresh_sleep = async {
+                match refresh_due {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let idle_due = last_refresh_sent.unwrap_or(opened) + IDLE_REFRESH;
+            let mut metadata_changed = false;
+            let mut frame_completed = false;
+            let mut force_flush = false;
             tokio::select! {
                 _ = self.cancel.cancelled() => break Ok(()),
                 input = self.inputs.recv() => {
@@ -331,6 +364,7 @@ impl ConsoleRequest {
                         }
                     };
                     if result.is_err() { break Err(Error::ConsoleProtocol); }
+                    continue;
                 }
                 _ = pace.tick(), if !typed.is_empty() => {
                     // Shift goes down and up within one character, so stopping between
@@ -344,42 +378,155 @@ impl ConsoleRequest {
                         snapshot.typing = typed.len();
                         self.sender.send_replace(Arc::new(snapshot.clone()));
                     }
+                    continue;
                 }
-                _ = refresh.tick() => {
-                    let mut changed = false;
-                    let mut failed = false;
-                    let mut metadata_changed = false;
-                    for _ in 0..256 {
-                        match client.poll_event().await {
-                            Ok(Some(VncEvent::SetResolution(screen))) => { if let Err(error)=buffer.resize(screen.width, screen.height){break 'running Err(error);} changed = true; }
-                            Ok(Some(VncEvent::RawImage(rect, data))) => { if let Err(error)=buffer.draw(rect, &data){break 'running Err(error);} changed = true; }
-                            Ok(Some(VncEvent::Copy(dst, src))) => { if let Err(error)=buffer.copy(dst, src){break 'running Err(error);} changed = true; }
-                            Ok(Some(VncEvent::DesktopUpdate(update))) => {
-                                if let Some(layout) = update.layout && (buffer.width, buffer.height) != (layout.width, layout.height) { if let Err(error) = buffer.resize(layout.width, layout.height) { break 'running Err(error); } changed = true; }
+                event = client.recv_event() => {
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(_) => break Err(Error::ConsoleProtocol),
+                    };
+                    let (pixels, meta) = match apply_vnc_event(
+                        event,
+                        &client,
+                        &mut buffer,
+                        &mut snapshot,
+                        &mut clipboard,
+                    )
+                    .await
+                    {
+                        Ok(flags) => flags,
+                        Err(error) => break 'running Err(error),
+                    };
+                    dirty_pixels |= pixels;
+                    metadata_changed |= meta;
+                    match drain_vnc_events(
+                        &client,
+                        &mut buffer,
+                        &mut snapshot,
+                        &mut clipboard,
+                        &self.cancel,
+                    )
+                    .await
+                    {
+                        Ok(Some((pixels, meta))) => {
+                            dirty_pixels |= pixels;
+                            metadata_changed |= meta;
+                        }
+                        Ok(None) => break 'running Ok(()),
+                        Err(error) => break 'running Err(error),
+                    }
+                    if updates_rx.has_changed().unwrap_or(false) {
+                        let _ = updates_rx.borrow_and_update();
+                        frame_completed = true;
+                        match drain_vnc_events(
+                            &client,
+                            &mut buffer,
+                            &mut snapshot,
+                            &mut clipboard,
+                            &self.cancel,
+                        )
+                        .await
+                        {
+                            Ok(Some((pixels, meta))) => {
+                                dirty_pixels |= pixels;
+                                metadata_changed |= meta;
                             }
-                            Ok(Some(VncEvent::QemuExtendedKeyEvent)) => { snapshot.extended_keys = true; metadata_changed = true; }
-                            Ok(Some(VncEvent::SetCursor(rect, rgba))) => {
-                                if rgba.len() != usize::from(rect.width) * usize::from(rect.height) * 4 || rect.width > 256 || rect.height > 256 { break 'running Err(Error::ConsoleProtocol); }
-                                snapshot.cursor = Some(Arc::new(ConsoleCursor { width: rect.width, height: rect.height, hotspot: [rect.x.min(rect.width.saturating_sub(1)), rect.y.min(rect.height.saturating_sub(1))], rgba: rgba.into() })); metadata_changed = true;
-                            }
-                            Ok(Some(VncEvent::Text(text))) => { if text.len() > clipboard::MAX_TEXT { break 'running Err(Error::ConsoleProtocol); } clipboard.guest = Some(text); metadata_changed = true; }
-                            Ok(Some(VncEvent::Clipboard(message))) => { if clipboard.receive(&client, message).await.is_err() { break 'running Err(Error::ConsoleProtocol); } metadata_changed = true; }
-                            Ok(Some(VncEvent::Error(_))) | Err(_) => { failed = true; break; }
-                            Ok(None) => break,
-                            _ => {},
+                            Ok(None) => break 'running Ok(()),
+                            Err(error) => break 'running Err(error),
                         }
                     }
-                    if failed { break Err(Error::ConsoleProtocol); }
-                    if changed && buffer.width > 0 {
-                        let frame = Arc::new(ConsoleFrame { width: buffer.width, height: buffer.height, rgba: buffer.rgba.clone().into() });
-                        snapshot.state = ConsoleState::Connected; snapshot.frame = Some(frame);
+                }
+                changed = updates_rx.changed(), if refresh_in_flight => {
+                    if changed.is_err() {
+                        break Err(Error::ConsoleProtocol);
                     }
-                    if changed || metadata_changed {
-                        snapshot.guest_clipboard = clipboard.guest.as_deref().map(Arc::from);
-                        snapshot.clipboard_utf8 = clipboard.utf8();
-                        self.sender.send_replace(Arc::new(snapshot.clone()));
+                    frame_completed = true;
+                    match drain_vnc_events(
+                        &client,
+                        &mut buffer,
+                        &mut snapshot,
+                        &mut clipboard,
+                        &self.cancel,
+                    )
+                    .await
+                    {
+                        Ok(Some((pixels, meta))) => {
+                            dirty_pixels |= pixels;
+                            metadata_changed |= meta;
+                        }
+                        Ok(None) => break 'running Ok(()),
+                        Err(error) => break 'running Err(error),
                     }
-                    if client.input(X11Event::Refresh).await.is_err() { break Err(Error::ConsoleProtocol); }
+                }
+                _ = flush_sleep, if dirty_pixels && flush_due.is_some() => {
+                    flush_due = None;
+                    force_flush = true;
+                }
+                _ = refresh_sleep, if !refresh_in_flight && refresh_due.is_some() => {
+                    refresh_due = None;
+                    if client.input(X11Event::Refresh).await.is_err() {
+                        break Err(Error::ConsoleProtocol);
+                    }
+                    refresh_in_flight = true;
+                    last_refresh_sent = Some(tokio::time::Instant::now());
+                    continue;
+                }
+                _ = tokio::time::sleep_until(idle_due), if refresh_in_flight => {
+                    if client.input(X11Event::Refresh).await.is_err() {
+                        break Err(Error::ConsoleProtocol);
+                    }
+                    last_refresh_sent = Some(tokio::time::Instant::now());
+                    continue;
+                }
+            }
+            let now = tokio::time::Instant::now();
+            let mut publish = false;
+            if (frame_completed || force_flush) && buffer.width > 0 {
+                if dirty_pixels || snapshot.frame.is_none() {
+                    let frame = Arc::new(ConsoleFrame {
+                        width: buffer.width,
+                        height: buffer.height,
+                        rgba: buffer.rgba.clone().into(),
+                    });
+                    snapshot.state = ConsoleState::Connected;
+                    snapshot.frame = Some(frame);
+                    dirty_pixels = false;
+                    flush_due = None;
+                    last_publish = Some(now);
+                    publish = true;
+                } else if snapshot.state != ConsoleState::Connected {
+                    snapshot.state = ConsoleState::Connected;
+                    last_publish = Some(now);
+                    publish = true;
+                }
+            } else if dirty_pixels && flush_due.is_none() {
+                flush_due =
+                    Some(last_publish.map_or(now + FRAME_PACE, |t| (t + FRAME_PACE).max(now)));
+            }
+            if metadata_changed {
+                snapshot.guest_clipboard = clipboard.guest.as_deref().map(Arc::from);
+                snapshot.clipboard_utf8 = clipboard.utf8();
+                publish = true;
+            }
+            if publish {
+                self.sender.send_replace(Arc::new(snapshot.clone()));
+            }
+            if frame_completed {
+                refresh_in_flight = false;
+                let next_refresh = if snapshot.frame.is_some() {
+                    last_refresh_sent.map_or(now, |t| t + FRAME_PACE)
+                } else {
+                    now
+                };
+                if next_refresh <= now {
+                    refresh_due = None;
+                    if client.input(X11Event::Refresh).await.is_err() {
+                        break Err(Error::ConsoleProtocol);
+                    }
+                    refresh_in_flight = true;
+                    last_refresh_sent = Some(now);
+                } else {
+                    refresh_due = Some(next_refresh);
                 }
             }
         };
@@ -429,6 +576,97 @@ async fn host_reference(
         return Err(Error::Stale);
     }
     Ok(vm_ref.into_string())
+}
+
+/// Applies every event that is already queued and says whether pixels and whether
+/// metadata changed. `None` means the console was cancelled while the queue stayed full:
+/// a server that never stops sending cannot keep a closed console running.
+async fn drain_vnc_events(
+    client: &vnc::VncClient,
+    buffer: &mut Framebuffer,
+    snapshot: &mut ConsoleSnapshot,
+    clipboard: &mut clipboard::Clipboard,
+    cancel: &CancellationToken,
+) -> Result<Option<(bool, bool)>, Error> {
+    let mut changed = (false, false);
+    let mut applied = 0usize;
+    while let Some(event) = client
+        .poll_event()
+        .await
+        .map_err(|_| Error::ConsoleProtocol)?
+    {
+        let (pixels, meta) = apply_vnc_event(event, client, buffer, snapshot, clipboard).await?;
+        changed.0 |= pixels;
+        changed.1 |= meta;
+        applied += 1;
+        if applied.is_multiple_of(DRAIN_CHECK) && cancel.is_cancelled() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(changed))
+}
+
+async fn apply_vnc_event(
+    event: VncEvent,
+    client: &vnc::VncClient,
+    buffer: &mut Framebuffer,
+    snapshot: &mut ConsoleSnapshot,
+    clipboard: &mut clipboard::Clipboard,
+) -> Result<(bool, bool), Error> {
+    match event {
+        VncEvent::SetResolution(screen) => {
+            buffer.resize(screen.width, screen.height)?;
+            Ok((true, false))
+        }
+        VncEvent::RawImage(rect, data) => Ok((buffer.draw(rect, &data)?, false)),
+        VncEvent::Copy(dst, src) => Ok((buffer.copy(dst, src)?, false)),
+        VncEvent::DesktopUpdate(update) => {
+            if let Some(layout) = update.layout
+                && (buffer.width, buffer.height) != (layout.width, layout.height)
+            {
+                buffer.resize(layout.width, layout.height)?;
+                return Ok((true, false));
+            }
+            Ok((false, false))
+        }
+        VncEvent::QemuExtendedKeyEvent => {
+            snapshot.extended_keys = true;
+            Ok((false, true))
+        }
+        VncEvent::SetCursor(rect, rgba) => {
+            if rgba.len() != usize::from(rect.width) * usize::from(rect.height) * 4
+                || rect.width > 256
+                || rect.height > 256
+            {
+                return Err(Error::ConsoleProtocol);
+            }
+            snapshot.cursor = Some(Arc::new(ConsoleCursor {
+                width: rect.width,
+                height: rect.height,
+                hotspot: [
+                    rect.x.min(rect.width.saturating_sub(1)),
+                    rect.y.min(rect.height.saturating_sub(1)),
+                ],
+                rgba: rgba.into(),
+            }));
+            Ok((false, true))
+        }
+        VncEvent::Text(text) => {
+            if text.len() > clipboard::MAX_TEXT {
+                return Err(Error::ConsoleProtocol);
+            }
+            clipboard.guest = Some(text);
+            Ok((false, true))
+        }
+        VncEvent::Clipboard(message) => {
+            if clipboard.receive(client, message).await.is_err() {
+                return Err(Error::ConsoleProtocol);
+            }
+            Ok((false, true))
+        }
+        VncEvent::Error(_) => Err(Error::ConsoleProtocol),
+        _ => Ok((false, false)),
+    }
 }
 
 fn key_event(keysym: u32, keycode: Option<u32>, down: bool) -> X11Event {
@@ -534,30 +772,42 @@ impl Framebuffer {
         u32::from(r.x) + u32::from(r.width) <= u32::from(self.width)
             && u32::from(r.y) + u32::from(r.height) <= u32::from(self.height)
     }
-    fn draw(&mut self, rect: vnc::Rect, data: &[u8]) -> Result<(), Error> {
+    fn draw(&mut self, rect: vnc::Rect, data: &[u8]) -> Result<bool, Error> {
         if !self.valid(rect) || data.len() != usize::from(rect.width) * usize::from(rect.height) * 4
         {
             return Err(Error::ConsoleProtocol);
         }
+        let mut changed = false;
+        let size = usize::from(rect.width) * 4;
         for y in 0..usize::from(rect.height) {
             let dst =
                 ((usize::from(rect.y) + y) * usize::from(self.width) + usize::from(rect.x)) * 4;
-            let src = y * usize::from(rect.width) * 4;
-            let size = usize::from(rect.width) * 4;
-            self.rgba[dst..dst + size].copy_from_slice(&data[src..src + size]);
-            for pixel in self.rgba[dst..dst + size].as_chunks_mut::<4>().0 {
-                pixel[3] = 255;
+            let src = y * size;
+            for (d, s) in self.rgba[dst..dst + size]
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(data[src..src + size].as_chunks::<4>().0)
+            {
+                let pixel = [s[0], s[1], s[2], 255];
+                if *d != pixel {
+                    *d = pixel;
+                    changed = true;
+                }
             }
         }
-        Ok(())
+        Ok(changed)
     }
-    fn copy(&mut self, dst: vnc::Rect, src: vnc::Rect) -> Result<(), Error> {
+    fn copy(&mut self, dst: vnc::Rect, src: vnc::Rect) -> Result<bool, Error> {
         if !self.valid(src)
             || !self.valid(dst)
             || src.width != dst.width
             || src.height != dst.height
         {
             return Err(Error::ConsoleProtocol);
+        }
+        if src.x == dst.x && src.y == dst.y {
+            return Ok(false);
         }
         let mut pixels = Vec::with_capacity(usize::from(src.width) * usize::from(src.height) * 4);
         for y in 0..usize::from(src.height) {
@@ -604,6 +854,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(buffer.rgba, [1, 0, 0, 255, 1, 0, 0, 255, 2, 0, 0, 255]);
+        // Identical pixel writes and self-copies report no change so idle frames are skipped.
+        assert!(
+            !buffer
+                .draw(
+                    vnc::Rect {
+                        x: 0,
+                        y: 0,
+                        width: 3,
+                        height: 1,
+                    },
+                    &[1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0],
+                )
+                .unwrap()
+        );
+        assert!(
+            !buffer
+                .copy(
+                    vnc::Rect {
+                        x: 0,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                    vnc::Rect {
+                        x: 0,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                )
+                .unwrap()
+        );
         assert!(
             buffer
                 .draw(
