@@ -90,6 +90,9 @@ pub struct Editor {
     pub(super) declaration: String,
     pub(super) local_acknowledged: bool,
     pub(super) local_introduction: Option<(u8, String)>,
+    /// The repository a local probe row filled the form with, and the drivers whose
+    /// probes reported it. A driver that did not report it cannot introduce it.
+    pub(super) local_reported: Option<(String, Vec<LocalStorageKind>)>,
     pub(super) local_probe: Option<(HostId, String, bool)>,
     pub(super) version: NfsVersion,
     pub(super) host: Option<HostId>,
@@ -178,6 +181,7 @@ pub(super) fn open(m: &mut Model, pool: PoolId, sr: Option<SrId>) -> bool {
         declaration: String::new(),
         local_acknowledged: false,
         local_introduction: None,
+        local_reported: None,
         local_probe: None,
         version: NfsVersion::Automatic,
         host: inventory.hosts.keys().next().copied(),
@@ -204,6 +208,23 @@ pub(super) fn local_kind_index(kind: LocalStorageKind) -> u8 {
         LocalStorageKind::Lvm => 6,
         LocalStorageKind::Xfs => 7,
     }
+}
+
+/// The drivers whose probes reported the repository the form names, when a probe row
+/// named it.
+pub(super) fn reported_kinds(e: &Editor) -> Option<&[LocalStorageKind]> {
+    e.local_reported
+        .as_ref()
+        .filter(|(uuid, _)| uuid == e.uuid.trim())
+        .map(|(_, kinds)| kinds.as_slice())
+}
+
+pub(super) fn kind_labels(kinds: &[LocalStorageKind]) -> String {
+    kinds
+        .iter()
+        .map(|kind| kind.label())
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 pub(super) fn location(editor: &Editor) -> StorageLocation {
@@ -315,6 +336,7 @@ pub(super) fn query(m: &mut Model, step: u8) {
         && let Some(e) = &mut m.areas.storage.editor
     {
         e.local_probe = None;
+        e.local_reported = None;
     }
     let result = (|| {
         let e = m
@@ -459,7 +481,14 @@ pub(super) fn select_result(m: &mut Model, index: usize) {
     match &e.discovered {
         Some(StorageDiscoveryResult::LocalRepositories(rows)) => {
             if let Some(row) = rows.get(index) {
+                // One reporting driver leaves nothing to choose. Two do: the EXT and XFS
+                // probes look for the same prefix, and the operator says which it is.
+                if let [kind] = row.probe_kinds[..] {
+                    e.kind = local_kind_index(kind);
+                }
                 e.local_introduction = None;
+                e.local_reported =
+                    Some((row.repository.uuid.to_string(), row.probe_kinds.clone()));
                 e.uuid = row.repository.uuid.to_string();
                 e.mode = Mode::Introduce;
             }
@@ -514,6 +543,10 @@ pub(super) fn set_kind(m: &mut Model, kind: u8) {
         if matches!(kind, 5..=7) && !is_local(e) {
             e.path = String::new();
         }
+        if !(matches!(kind, 5..=7) && is_local(e)) {
+            // What a local probe reported belongs to the device path it was asked about.
+            e.local_reported = None;
+        }
         e.local_probe = None;
         e.local_acknowledged = false;
         e.local_introduction = None;
@@ -532,6 +565,7 @@ pub(super) fn set_host(m: &mut Model, id: HostId) {
     if e.host != Some(id) {
         e.host = Some(id);
         e.local_probe = None;
+        e.local_reported = None;
         e.local_acknowledged = false;
         e.hba_device = None;
         if e.kind == 4 {
@@ -581,6 +615,14 @@ pub(super) fn capture(e: &Editor) -> Result<Option<LocalDeviceDeclaration>, Stri
         return Ok(None);
     }
     if e.mode == Mode::Introduce {
+        if let Some(kinds) = reported_kinds(e)
+            && !kinds.iter().any(|kind| local_kind_index(*kind) == e.kind)
+        {
+            return Err(format!(
+                "The probe reported this repository through {} only. Choose that driver, or probe the device again.",
+                kind_labels(kinds)
+            ));
+        }
         if !e
             .local_introduction
             .as_ref()

@@ -390,13 +390,29 @@ fn local_known_repository_selection_chooses_nonformatting_introduction() {
     h.click("storage-result-0");
     let e = editor(&h);
     assert!(e.mode == Mode::Introduce);
-    assert_eq!(e.kind, 5);
+    // One driver reported the repository, so the form takes that driver. The operator
+    // still confirms it.
+    assert_eq!(e.kind, 6);
     assert!(e.review.is_none());
+    assert!(h.has_text("The probe reported this repository through Local LVM."));
     editor::review(&mut h.model);
     assert!(editor(&h).review.is_none());
-    let e = editor_mut(&mut h);
-    e.kind = 6;
-    e.local_introduction = Some((e.kind, e.uuid.trim().into()));
+    // A driver that did not report the repository is refused for it, confirmed or not.
+    for other in [5, 7] {
+        editor::set_kind(&mut h.model, other);
+        h.click("storage-local-driver-confirm");
+        editor::review(&mut h.model);
+        assert!(editor(&h).review.is_none(), "kind {other}");
+        assert!(
+            editor(&h)
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("through Local LVM only")),
+            "kind {other}"
+        );
+    }
+    editor::set_kind(&mut h.model, 6);
+    h.click("storage-local-driver-confirm");
     editor::review(&mut h.model);
     assert!(matches!(
         reviewed(&h),
@@ -430,6 +446,19 @@ fn ambiguous_local_probe_never_chooses_a_driver_and_confirmation_binds_kind_and_
     assert_eq!(editor(&h).kind, 5);
     h.click("storage-review");
     assert!(editor(&h).review.is_none());
+    // LVM did not report this repository: it is refused, and neither of the two that
+    // did is chosen in its place.
+    editor::set_kind(&mut h.model, 6);
+    h.click("storage-local-driver-confirm");
+    h.click("storage-review");
+    assert!(editor(&h).review.is_none());
+    assert_eq!(editor(&h).kind, 6);
+    assert!(
+        editor(&h)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("through Local EXT / Local XFS only"))
+    );
     editor::set_kind(&mut h.model, 7);
     h.click("storage-local-driver-confirm");
     h.type_text("storage-uuid", &Uuid::from_u128(703).to_string());

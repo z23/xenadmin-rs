@@ -614,6 +614,7 @@ fn local_fields(e: &Editor) -> Vec<Block> {
             edit(|e, text| {
                 e.path = text.to_owned();
                 e.local_probe = None;
+                e.local_reported = None;
                 e.local_acknowledged = false;
             })
         )
@@ -642,6 +643,13 @@ fn local_fields(e: &Editor) -> Vec<Block> {
                 .as_ref()
                 .is_some_and(|(kind, uuid)| *kind == e.kind && uuid == e.uuid.trim());
             blocks![
+                editor::reported_kinds(e).map(|kinds| {
+                    caption(format!(
+                        "The probe reported this repository through {}.",
+                        editor::kind_labels(kinds)
+                    ))
+                    .key("storage-local-reported")
+                }),
                 caption("EXT and XFS probes inspect the same volume-group prefix. A result does not establish filesystem type. Choose the backend you independently verified for this exact repository UUID."),
                 checkbox(
                     "storage-local-driver-confirm",
@@ -869,11 +877,7 @@ fn discovery_results(m: &Model, e: &Editor) -> Vec<Block> {
                 .map(|r| {
                     format!(
                         "Reported by {} · {}\n{} · driver must be independently verified",
-                        r.probe_kinds
-                            .iter()
-                            .map(|k| k.label())
-                            .collect::<Vec<_>>()
-                            .join(" / "),
+                        editor::kind_labels(&r.probe_kinds),
                         r.repository.name,
                         r.repository.uuid
                     )
