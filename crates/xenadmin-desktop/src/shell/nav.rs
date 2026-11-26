@@ -17,11 +17,12 @@
 //!   Shift+F10 ask the model for it (`open_context_menu`), and the shell
 //!   presents whatever menu the model has open.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use xenadmin_ui::nav::{self, NavRow, NavView};
-use xenadmin_ui::object::ObjectRef;
+use xenadmin_ui::TabId;
+use xenadmin_ui::nav::{self, NavRow, NavRowsFingerprint, NavView};
+use xenadmin_ui::object::{ObjectRef, Target};
 use xenadmin_ui::selection::MenuOrigin;
 
 use super::icons;
@@ -72,12 +73,16 @@ pub struct NavPane {
     tree_stop: FocusHandle,
     /// The rows the tree was built from, and what they were built for.
     rows: Vec<NavRow>,
+    row_index: HashMap<String, usize>,
+    parents_with_children: HashSet<String>,
+    object_row: HashMap<ObjectRef, usize>,
     view: NavView,
     filter: String,
     meta: Rc<HashMap<SharedString, RowMeta>>,
     /// The ids of the rows that are on screen when nothing is scrolled off:
     /// every row whose ancestors are expanded, in order.
     visible: Vec<SharedString>,
+    visible_index: HashMap<SharedString, usize>,
     /// Expansion the user chose, by view and row id. A row the user did not
     /// touch is as `NavRow::expanded` says.
     expansion: HashMap<(NavView, String), bool>,
@@ -88,6 +93,9 @@ pub struct NavPane {
     cursor: Option<SharedString>,
     /// The rows that showed the model's scope at the last sync.
     scope_rows: Vec<String>,
+    /// Cached fingerprints of inputs to `nav::rows` and `nav::selected_ids`.
+    rows_fingerprint: Option<NavRowsFingerprint>,
+    scope_key: Option<(NavView, TabId, Target)>,
     /// The store revision the pane was last brought in line with.
     revision: Option<u64>,
     /// Where the shell opens the menu the pane asks the model for.
@@ -139,14 +147,20 @@ impl NavPane {
             tree,
             tree_stop: cx.focus_handle().tab_stop(true),
             rows: Vec::new(),
+            row_index: HashMap::new(),
+            parents_with_children: HashSet::new(),
+            object_row: HashMap::new(),
             view: NavView::default(),
             filter: String::new(),
             meta: Rc::new(HashMap::new()),
             visible: Vec::new(),
+            visible_index: HashMap::new(),
             expansion: HashMap::new(),
             filter_expansion: HashMap::new(),
             cursor: None,
             scope_rows: Vec::new(),
+            rows_fingerprint: None,
+            scope_key: None,
             revision: None,
             anchor,
             _subscriptions: subscriptions,
@@ -178,24 +192,37 @@ impl NavPane {
         window: &Window,
         cx: &App,
     ) -> Option<Point<Pixels>> {
-        let row = self
-            .rows
-            .iter()
-            .find(|row| row.object.as_ref() == Some(object))?;
+        let &ix = self.object_row.get(object)?;
+        let row = self.rows.get(ix)?;
         let id = SharedString::from(row.id.clone());
-        self.visible
-            .contains(&id)
+        self.visible_index
+            .contains_key(&id)
             .then(|| self.row_position(&id, window, cx))
     }
 
     fn row(&self, id: &str) -> Option<&NavRow> {
-        self.rows.iter().find(|row| row.id == id)
+        let &ix = self.row_index.get(id)?;
+        self.rows.get(ix)
     }
 
     fn has_children(&self, id: &str) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.parent.as_deref() == Some(id))
+        self.parents_with_children.contains(id)
+    }
+
+    fn rebuild_row_indexes(&mut self) {
+        self.row_index.clear();
+        self.row_index.reserve(self.rows.len());
+        self.parents_with_children.clear();
+        self.object_row.clear();
+        for (ix, row) in self.rows.iter().enumerate() {
+            self.row_index.insert(row.id.clone(), ix);
+            if let Some(parent) = &row.parent {
+                self.parents_with_children.insert(parent.clone());
+            }
+            if let Some(object) = &row.object {
+                self.object_row.entry(object.clone()).or_insert(ix);
+            }
+        }
     }
 
     fn is_expanded(&self, row: &NavRow) -> bool {
@@ -242,7 +269,12 @@ impl NavPane {
         }
         let mut visible = Vec::with_capacity(self.rows.len());
         walk(self, &self.children(), None, &mut visible);
+        let mut visible_index = HashMap::with_capacity(visible.len());
+        for (ix, id) in visible.iter().enumerate() {
+            visible_index.insert(id.clone(), ix);
+        }
         self.visible = visible;
+        self.visible_index = visible_index;
     }
 
     fn items(&self) -> Vec<TreeItem> {
@@ -267,6 +299,7 @@ impl NavPane {
     }
 
     fn rebuild_meta(&mut self) {
+        let scope_set: HashSet<&str> = self.scope_rows.iter().map(String::as_str).collect();
         self.meta = Rc::new(
             self.rows
                 .iter()
@@ -277,7 +310,7 @@ impl NavPane {
                             icon: icons::row_icon(self.view, row.icon),
                             status: row.status.clone().map(SharedString::from),
                             object: row.object.clone(),
-                            in_scope: self.scope_rows.contains(&row.id),
+                            in_scope: scope_set.contains(row.id.as_str()),
                         },
                     )
                 })
@@ -311,14 +344,22 @@ impl NavPane {
             return;
         }
         self.revision = Some(revision);
-        let (rows, scope_rows, view, filter) = {
+        let (rows_fingerprint, view, filter, scope_key) = {
             let model = self.store.read(cx).model();
-            let rows = nav::rows(model);
-            let scope_rows = nav::selected_ids(model, &rows);
-            (rows, scope_rows, model.nav.view, model.nav.filter.clone())
+            (
+                nav::rows_fingerprint(model),
+                model.nav.view,
+                model.nav.filter.clone(),
+                (
+                    model.nav.view,
+                    model.nav.notification_tab,
+                    model.selection.scope.clone(),
+                ),
+            )
         };
         let view_changed = view != self.view;
-        if filter != self.filter {
+        let filter_changed = filter != self.filter;
+        if filter_changed {
             self.filter_expansion.clear();
             // The box follows the model when the model changed the text
             // (a scene, a command), never when the two merely differ: a
@@ -329,20 +370,47 @@ impl NavPane {
                     .update(cx, |input, cx| input.set_value(text, window, cx));
             }
         }
-        let rows_changed = rows != self.rows || view_changed || filter != self.filter;
-        let scope_changed = scope_rows != self.scope_rows || view_changed;
+        let rows_unchanged = rows_fingerprint.is_some()
+            && rows_fingerprint == self.rows_fingerprint
+            && !view_changed
+            && !filter_changed;
+        let next_rows = if rows_unchanged {
+            None
+        } else {
+            let model = self.store.read(cx).model();
+            Some(nav::rows(model))
+        };
+        let rows_changed = next_rows
+            .as_ref()
+            .is_some_and(|rows| rows != &self.rows || view_changed || filter_changed);
+        self.rows_fingerprint = rows_fingerprint;
         self.view = view;
         self.filter = filter;
         if rows_changed {
-            self.rows = rows;
+            self.rows = next_rows.expect("checked above");
+            self.rebuild_row_indexes();
             if view_changed {
                 // A row id of another view means nothing here.
                 self.cursor = None;
             }
             self.rebuild_tree(cx);
         }
+        let scope_inputs_changed = rows_changed || self.scope_key.as_ref() != Some(&scope_key);
+        let scope_changed = if scope_inputs_changed {
+            let scope_rows = {
+                let model = self.store.read(cx).model();
+                nav::selected_ids(model, &self.rows)
+            };
+            self.scope_key = Some(scope_key);
+            let changed = scope_rows != self.scope_rows || view_changed;
+            if changed {
+                self.scope_rows = scope_rows;
+            }
+            changed
+        } else {
+            false
+        };
         if scope_changed {
-            self.scope_rows = scope_rows;
             // The cursor follows the scope when the scope moved, and stays
             // where the user put it otherwise.
             let target = self.scope_rows.first().cloned().map(SharedString::from);
@@ -363,7 +431,9 @@ impl NavPane {
         if rows_changed || scope_changed {
             self.rebuild_meta();
         }
-        cx.notify();
+        if rows_changed || scope_changed || view_changed || filter_changed {
+            cx.notify();
+        }
     }
 
     fn select_in_model(&self, id: &str, cx: &mut App) {
@@ -423,7 +493,7 @@ impl NavPane {
 
     fn cursor_position(&self) -> Option<usize> {
         let cursor = self.cursor.as_ref()?;
-        self.visible.iter().position(|id| id == cursor)
+        self.visible_index.get(cursor).copied()
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -527,11 +597,7 @@ impl NavPane {
             .map(|size| size.item.height)
             .filter(|height| *height > px(0.))
             .unwrap_or_else(|| window.rem_size() * 1.75);
-        let index = self
-            .visible
-            .iter()
-            .position(|other| other == id)
-            .unwrap_or(0);
+        let index = self.visible_index.get(id).copied().unwrap_or(0);
         let offset = state.base_handle.offset().y;
         let y = list.top() + row_height * (index as f32 + 1.) + offset;
         point(

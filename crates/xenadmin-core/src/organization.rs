@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const FIELD_KEY: &str = "XenCenter.CustomFields";
 pub(crate) const FIELD_PREFIX: &str = "XenCenter.CustomFields.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OrganizationObjectId {
     Pool(PoolId),
     Host(HostId),
