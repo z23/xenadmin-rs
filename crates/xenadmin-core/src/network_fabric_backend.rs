@@ -1,3 +1,6 @@
+#[path = "network_sriov_backend.rs"]
+mod sriov;
+pub(crate) use sriov::{capacity, vlan_identity, vlan_uplink};
 #[path = "network_fabric_pool_backend.rs"]
 pub(super) mod pool;
 use super::{network, xapi};
@@ -209,6 +212,9 @@ impl Fresh {
             Kind::Tunnel(_) => {}
             Kind::Sriov => classes.push("PCI"),
         };
+        Self::read_classes(s, &classes).await
+    }
+    async fn read_classes(s: &Session, classes: &[&str]) -> Result<Self, Error> {
         let mut raw = BTreeMap::new();
         for c in classes {
             let map = network::all(s, c).await?;

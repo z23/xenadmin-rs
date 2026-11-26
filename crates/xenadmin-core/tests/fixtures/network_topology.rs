@@ -1,3 +1,5 @@
+#[path = "sriov_vlan.rs"]
+mod sriov;
 use super::*;
 use std::collections::BTreeMap;
 use xenadmin_core::{
@@ -110,15 +112,16 @@ async fn fixture(retag: bool, fault: Fault) -> (Mock, Arc<Mutex<Control>>) {
             }
             return Some(RpcReply::Json(json!({"result":batch})))
         }
-        if let Some(class)=method.strip_suffix(".get_all_records") && ["pool","host","host_metrics","network","PIF","VLAN","task"].contains(&class) {
+        if method=="Cluster_host.get_all_records" && let Some(code)=state.records.get("_cluster_error") {return Some(RpcReply::Json(json!({"error":{"code":1,"message":code,"data":[]}})));}
+        if let Some(class)=method.strip_suffix(".get_all_records") && ["pool","host","host_metrics","network","PIF","VLAN","task","network_sriov","PCI","Bond","tunnel","VIF","VM","Cluster_host"].contains(&class) {
             let rows=state.records.iter().filter(|(reference,_)|reference.split(':').nth(1)==Some(class)).map(|(r,v)|(r.clone(),v.clone())).collect::<serde_json::Map<_,_>>();
             return Some(RpcReply::Json(json!({"result":rows})))
         }
-        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["pool","host","host_metrics","network","PIF","VLAN","task"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["pool","host","host_metrics","network","PIF","VLAN","task","network_sriov","PCI","Bond","tunnel","VIF","VM","Cluster_host"].contains(&class) {
             let found=state.records.iter().find(|(r,v)|r.split(':').nth(1)==Some(class)&&v["uuid"]==request["params"][1]);
             return Some(RpcReply::Json(match found {Some((r,_))=>json!({"result":r}),None=>json!({"error":{"code":1,"message":"UUID_INVALID","data":[]}})}))
         }
-        if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","host_metrics","network","PIF","VLAN","task"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","host_metrics","network","PIF","VLAN","task","network_sriov","PCI","Bond","tunnel","VIF","VM","Cluster_host"].contains(&class) {
             if class=="VLAN" && state.writes>0 && state.fault==Fault::VerificationRead {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})))}
             if class=="task" && request["params"][1]==reference("task",1) {state.task_reads+=1;}
             let value=state.records.get(request["params"][1].as_str().unwrap()).cloned();
@@ -134,7 +137,7 @@ async fn fixture(retag: bool, fault: Fault) -> (Mock, Arc<Mutex<Control>>) {
                     assert!(matches!(tag,"0"|"100"));assert_eq!(net,reference("network",5));
                     let n=state.next;state.next+=1;
                     let vlan=reference("VLAN",n);let pif=reference("PIF",n+100);
-                    let mut child=state.records[parent].clone();child["uuid"]=json!(id(n+100));child["network"]=json!(net);child["VLAN"]=json!(tag);child["physical"]=json!(false);child["management"]=json!(false);child["currently_attached"]=json!(true);child["VLAN_slave_of"]=json!([]);child["VLAN_master_of"]=json!(vlan);
+                    let mut child=state.records[parent].clone();child["uuid"]=json!(id(n+100));child["network"]=json!(net);child["VLAN"]=json!(tag);child["physical"]=json!(false);child["management"]=json!(false);child["currently_attached"]=json!(true);child["VLAN_slave_of"]=json!([]);child["sriov_logical_PIF_of"]=json!([]);child["sriov_physical_PIF_of"]=json!([]);child["PCI"]=json!("OpaqueRef:NULL");child["VLAN_master_of"]=json!(vlan);
                     state.records.insert(pif.clone(),child);
                     state.records.insert(vlan.clone(),json!({"uuid":id(n),"tagged_PIF":parent,"untagged_PIF":pif,"tag":tag,"other_config":{}}));
                     state.records.get_mut(parent).unwrap()["VLAN_slave_of"].as_array_mut().unwrap().push(json!(&vlan));
@@ -151,6 +154,7 @@ async fn fixture(retag: bool, fault: Fault) -> (Mock, Arc<Mutex<Control>>) {
                 _=>return None,
             }
             state.writes+=1;
+            sriov::after_write(&mut state);
             let task=reference("task",state.writes as u128);
             let status=if state.fault==Fault::TaskFailure {"failure"}else if state.fault==Fault::Pending {"pending"}else{"success"};
             let writes=state.writes;
@@ -177,6 +181,7 @@ fn operation(connection: &xenadmin_core::Connection, retag: bool) -> NetworkTopo
         .map(|host| {
             let pif = PifId::from(id(host + 10));
             VlanUplink {
+                sriov: None,
                 pif,
                 expected: PifIdentity::from_inventory(&inventory.details.pifs[&pif]).unwrap(),
             }

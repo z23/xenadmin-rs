@@ -1425,6 +1425,7 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
             panic!()
         };
         let uplink = crate::VlanUplink {
+            sriov: None,
             pif: uuid::Uuid::new_v4().into(),
             expected: crate::PifIdentity {
                 management: false,

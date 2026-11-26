@@ -107,10 +107,14 @@ pub use network_fabric::{
 };
 mod network_topology;
 mod network_types;
+mod sriov_capacity;
+mod sriov_vlan;
 pub use network_service::{NetworkServiceInterface, NetworkServicePurpose, NetworkServiceReview};
 pub use network_topology::{
     NetworkTopologyChanges, NetworkTopologyOperation, ReviewedVlan, VlanUplink,
 };
+pub use sriov_capacity::{SriovCapacity, SriovCapacityQuery};
+pub use sriov_vlan::SriovVlanUplink;
 mod operations;
 mod profiles;
 pub use network_types::{

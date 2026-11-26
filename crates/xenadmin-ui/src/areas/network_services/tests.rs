@@ -873,7 +873,7 @@ fn the_information_of_the_hub_is_offered_to_the_networking_tab() {
     let i = inventory(&h);
     let nodes = crate::surface::flatten_blocks(
         "tab",
-        &super::networking_sections(&i, first_network(&h)),
+        &super::networking_sections(&h.model, i.pool_id, &i, first_network(&h)),
     );
     let has = |text: &str| {
         nodes
@@ -884,4 +884,90 @@ fn the_information_of_the_hub_is_offered_to_the_networking_tab() {
     assert!(has("Controller settings: available"));
     assert!(has("No interface reported on this network; this host is not covered."));
     assert!(crate::surface::duplicate_keys(&nodes).is_empty());
+}
+
+#[test]
+fn logical_vlan_review_captures_driver_impact_and_disables_stale_readiness() {
+    let mut h = Harness::scene("network-sriov-vlan");
+    let review = ed(&h).review.as_ref().expect("a review");
+    assert!(review.lines[2].contains("re-applies"));
+    assert!(
+        review
+            .lines
+            .iter()
+            .any(|l| l.contains("disabled and evacuated"))
+    );
+    assert!(
+        review
+            .lines
+            .iter()
+            .any(|l| l.contains("Same-driver interface"))
+    );
+    assert!(edit::unavailable(&h.model, ed(&h)).is_none());
+    assert_eq!(h.try_click("network-confirm"), Err(DEMO.into()));
+    assert!(h.model.resource_operations.is_empty());
+    amend(&mut h, |i| {
+        i.details
+            .network_fabric
+            .sriovs
+            .values_mut()
+            .next()
+            .unwrap()
+            .requires_reboot = Some(true);
+    });
+    let reason = edit::unavailable(&h.model, ed(&h)).expect("reboot requirement changed");
+    assert_eq!(h.try_click("network-confirm"), Err(reason));
+}
+
+#[test]
+fn vlan_removal_review_keeps_exact_ids_and_has_destroy_only_permission() {
+    let mut h = retag_scene();
+    let network = ed(&h).network;
+    h.click("network-close");
+    assert_eq!(
+        h.eligibility(super::commands::VLAN_DELETE_POOL.0),
+        Eligibility::Enabled
+    );
+    h.invoke(super::commands::VLAN_DELETE_POOL.0);
+    assert!(h.find("network-topology-tag").is_none());
+    let i = inventory(&h);
+    let interfaces = topology::retag(&i, network).unwrap();
+    let e = topology::Editor {
+        network,
+        tag: "invalid unused tag".into(),
+        selection: topology::Selection::Delete(interfaces.clone()),
+    };
+    let (op, lines) = topology::review(&e, &i).unwrap();
+    assert!(matches!(op, NetworkTopologyOperation::DeleteVlans { .. }));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&interfaces[0].vlan.to_string()))
+    );
+    assert!(!lines.iter().any(|l| l.contains("New VLAN tag")));
+    assert_eq!(
+        op.permission_requirements().methods().collect::<Vec<_>>(),
+        vec!["VLAN.destroy"]
+    );
+}
+
+#[test]
+fn capacity_inspection_is_a_separate_readonly_control_without_mutation_review() {
+    let mut h = Harness::scene("network-sriov-capacity");
+    assert!(h.surfaces().is_empty());
+    let i = inventory(&h);
+    let id = *i.details.network_fabric.sriovs.keys().next().unwrap();
+    let key = format!("sriov-capacity-{id}");
+    assert!(h.has_text("VF capacity has not been inspected."));
+    assert!(h.has_text("read-only observation"));
+    assert!(h.try_click(&key).is_err());
+    assert!(h.model.resource_operations.is_empty());
+    // Generic plug/unplug refuses SR-IOV interfaces with the driver-impact notice.
+    let logical = i.details.network_fabric.sriovs[&id].logical.unwrap();
+    h.model.areas.network.pif = Some(logical.to_string());
+    assert!(h.has_text(super::capacity::SRIOV_DRIVER_REVIEW));
+    assert_eq!(
+        h.eligibility(network::commands::NIC_PLUG.0),
+        Eligibility::disabled(super::capacity::SRIOV_DRIVER_REVIEW)
+    );
 }

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 use xenadmin_core::{
     ClassAvailability, HostId, Inventory, NetworkId, NetworkPciDevice, NetworkServicePurpose,
-    PciId, PifId, PoolId, SdnController, SdnControllerConfiguration, SdnControllerId,
+    NetworkSriov, NetworkSriovId, PciId, PifId, PoolId, SdnController, SdnControllerConfiguration,
+    SdnControllerId, SriovConfigurationMode, VlanUplink,
 };
 
 use super::edit::{self, Draft, SETTINGS};
@@ -40,6 +41,8 @@ pub fn scenes() -> Vec<SceneSpec> {
             AREA,
             fabric_pool_selection_scene,
         ),
+        SceneSpec::new("network-sriov-capacity", AREA, sriov_capacity_scene),
+        SceneSpec::new("network-sriov-vlan", AREA, sriov_vlan_scene),
     ]
 }
 
@@ -134,7 +137,7 @@ pub(super) fn topology_fixture(m: &mut Model) -> Option<NetworkId> {
 pub(super) fn open_creation(m: &mut Model, network: NetworkId) -> Option<()> {
     let pool = show(m, network)?;
     let i = m.inventory.clone()?;
-    let selection = topology::Selection::Create(topology::uplinks(&i, underlay()).ok()?);
+    let selection = topology::Selection::Create(topology::uplinks(&i, underlay(), network).ok()?);
     edit::open(
         m,
         pool,
@@ -366,4 +369,81 @@ fn fabric_pool_selection_scene(m: &mut Model) {
         return;
     };
     open_pool(m, network, inputs);
+}
+
+/// An SR-IOV network with an active logical interface on the Networking tab,
+/// showing the read-only VF capacity inspection controls.
+pub(super) fn sriov_capacity_fixture(m: &mut Model) -> Option<(NetworkId, NetworkSriovId)> {
+    let (network, _) = sriov_fixture(m)?;
+    let i = amend(m)?;
+    let physical = i.details.pifs.values().next()?.clone();
+    let id = NetworkSriovId::from(Uuid::from_u128(0x57000000000000000000000000000001));
+    let mut logical = physical.clone();
+    logical.id = Uuid::from_u128(0x57000000000000000000000000000002).into();
+    logical.physical = Some(false);
+    logical.network = Some(network);
+    logical.mac = "fe:ff:ff:ff:ff:ff".into();
+    logical.capabilities = Some(vec![]);
+    i.details.network_fabric.sriovs.insert(
+        id,
+        NetworkSriov {
+            id,
+            physical: Some(physical.id),
+            logical: Some(logical.id),
+            requires_reboot: Some(false),
+            mode: Some(SriovConfigurationMode::Sysfs),
+        },
+    );
+    i.details.pifs.insert(logical.id, logical);
+    show(m, network)?;
+    Some((network, id))
+}
+
+fn sriov_capacity_scene(m: &mut Model) {
+    let _ = sriov_capacity_fixture(m);
+}
+
+fn sriov_vlan_scene(m: &mut Model) {
+    let Some(_) = sriov_capacity_fixture(m) else {
+        return;
+    };
+    let Some(i) = amend(m) else {
+        return;
+    };
+    let Some(parent) = i
+        .details
+        .network_fabric
+        .sriovs
+        .values()
+        .next()
+        .and_then(|s| s.logical)
+    else {
+        return;
+    };
+    let target = NetworkId::from(Uuid::from_u128(0x58000000000000000000000000000001));
+    let mut row = i.networks[0].clone();
+    row.uuid = target.uuid();
+    row.name = "Synthetic SR-IOV VLAN".into();
+    i.networks.push(row);
+    let mut details = i.details.networks.values().next().unwrap().clone();
+    details.id = target;
+    details.purposes = Some(Default::default());
+    i.details.networks.insert(target, details);
+    let Ok(uplink) = VlanUplink::capture(i, parent, target) else {
+        return;
+    };
+    let Some(pool) = show(m, target) else {
+        return;
+    };
+    edit::open(
+        m,
+        pool,
+        target,
+        Draft::Topology(topology::Editor {
+            network: target,
+            tag: "100".into(),
+            selection: topology::Selection::Create(vec![uplink]),
+        }),
+    );
+    edit::review(m);
 }

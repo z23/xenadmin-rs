@@ -83,10 +83,13 @@
 //! Rune modules, carried over), [`edit`] (the open workflow: draft, review,
 //! submission), [`commands`], [`view`], [`scenes`], `tests`.
 
-use xenadmin_core::{Inventory, NetworkId};
+use std::collections::BTreeMap;
+
+use xenadmin_core::{Inventory, NetworkId, NetworkSriovId, PoolId};
 
 use crate::prelude::*;
 
+pub mod capacity;
 pub mod commands;
 pub mod edit;
 pub mod fabric;
@@ -103,6 +106,8 @@ mod tests;
 pub struct State {
     /// The open workflow with a draft: one of the four surfaces of `view`.
     pub editor: Option<edit::Editor>,
+    /// Read-only SR-IOV remaining VF capacity observations keyed by pool and record.
+    pub capacities: BTreeMap<(PoolId, NetworkSriovId), capacity::Observation>,
 }
 
 pub fn spec() -> AreaSpec {
@@ -110,6 +115,7 @@ pub fn spec() -> AreaSpec {
         commands: commands::commands,
         scenes: scenes::scenes,
         surfaces: view::surfaces,
+        poll: capacity::poll,
         on_scope_change: close,
         on_session_change: close,
         ..AreaSpec::new("network_services")
@@ -124,10 +130,16 @@ pub fn close(m: &mut Model) {
 
 /// The information blocks of this area for the Networking tab of a
 /// network: the Rune `service::view` and `fabric::view` without their
-/// buttons, which are the commands.
-pub fn networking_sections(i: &Inventory, network: NetworkId) -> Vec<Block> {
+/// mutation buttons (which are commands), plus read-only VF capacity
+/// inspection controls for SR-IOV records.
+pub fn networking_sections(
+    m: &Model,
+    pool: PoolId,
+    i: &Inventory,
+    network: NetworkId,
+) -> Vec<Block> {
     blocks![
         service::section(i, network),
-        fabric::coverage(i, network),
+        fabric::coverage_for_tab(m, pool, i, network),
     ]
 }

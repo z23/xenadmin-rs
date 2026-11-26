@@ -30,6 +30,7 @@ enum Request {
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
     SecurityDiscovery(crate::security_discovery::Request),
+    SriovCapacity(crate::sriov_capacity::Request),
     HostDataSources(crate::host_monitoring::Request),
     HostSupport(crate::host_support::Request),
     SnapshotPolicySupport(crate::snapshot_policy_support::Request),
@@ -717,6 +718,20 @@ impl Connection {
             crate::security_discovery::channel(observed, query, self.runtime.clone())?;
         self.requests
             .try_send(Request::SecurityDiscovery(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
+    pub fn inspect_sriov_capacity(
+        &self,
+        observed: crate::ObservedResource,
+    ) -> Result<crate::SriovCapacityQuery, Error> {
+        if self.latest().observe_resource(observed.target())? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) = crate::sriov_capacity::channel(observed, self.runtime.clone())?;
+        self.requests
+            .try_send(Request::SriovCapacity(request))
             .map_err(|_| Error::Busy)?;
         Ok(handle)
     }
@@ -1690,6 +1705,11 @@ async fn run(
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
                                     else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
+                                Request::SriovCapacity(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::GuestBoot(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -2131,6 +2151,7 @@ async fn forward_alias(
                         Request::Metrics(request) => request.fail(Error::Busy),
                         Request::StorageDiscovery(request) => request.fail(Error::Busy),
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
+                        Request::SriovCapacity(request) => request.fail(Error::Busy),
                         Request::HostDataSources(request) => request.fail(Error::Busy),
                         Request::HostSupport(request) => request.fail(Error::Busy),
                         Request::ManagementBondReview(request) => request.fail(Error::Busy),

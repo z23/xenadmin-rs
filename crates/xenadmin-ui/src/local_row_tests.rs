@@ -324,7 +324,7 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     ]),
     (T::Networking, K::Pool, &[
         "network.new", "network.vlan.add", "network.remove", "nic.ipv4", "nic.ipv6",
-        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool",
+        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool", "network.vlan.delete-pool",
         "network.service.nbd-tls", "network.service.nbd-plaintext", "network.fabric.add",
         "network.fabric.complete-pool", "network.fabric.remove", "network.fabric.remove-pool",
         "server.management.configure", "server.management.move",
@@ -351,7 +351,7 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     ]),
     (T::Networking, K::Host, &[
         "network.new", "network.vlan.add", "network.remove", "nic.ipv4", "nic.ipv6",
-        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool",
+        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool", "network.vlan.delete-pool",
         "network.service.nbd-tls", "network.service.nbd-plaintext", "network.fabric.add",
         "network.fabric.complete-pool", "network.fabric.remove", "network.fabric.remove-pool",
         "server.management.configure", "server.management.move",
@@ -431,7 +431,7 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     ]),
     (T::Networking, K::Network, &[
         "network.new", "network.vlan.add", "network.remove", "nic.ipv4", "nic.ipv6",
-        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool",
+        "nic.purpose", "network.vlan.create-pool", "network.vlan.retag-pool", "network.vlan.delete-pool",
         "network.service.nbd-tls", "network.service.nbd-plaintext", "network.fabric.add",
         "network.fabric.complete-pool", "network.fabric.remove", "network.fabric.remove-pool",
         "server.management.configure", "server.management.move",

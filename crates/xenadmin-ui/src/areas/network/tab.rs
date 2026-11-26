@@ -168,6 +168,8 @@ fn card(i: &Inventory, interfaces: &[&PhysicalInterface], selected: Option<&str>
                 (p.management == Some(true)).then(|| caption(
                     "Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access."
                 )),
+                crate::areas::network_services::capacity::needs_driver_review(i, p.id)
+                    .then(|| caption(crate::areas::network_services::capacity::SRIOV_DRIVER_REVIEW)),
                 caption(format!(
                     "IPv6 {} · {} · gateway {}",
                     p.ipv6_configuration_mode,
@@ -431,7 +433,7 @@ fn network_networking(m: &Model, i: &Inventory, pool: PoolId, id: NetworkId) -> 
         // The service state (NBD) and the tunnel and SR-IOV coverage of the
         // network: information of the `network_services` area, whose
         // commands are on this tab's row.
-        crate::areas::network_services::networking_sections(i, id),
+        crate::areas::network_services::networking_sections(m, pool, i, id),
         latest(m, pool),
     ]
 }

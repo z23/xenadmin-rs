@@ -11,8 +11,8 @@
 use std::collections::BTreeSet;
 
 use xenadmin_core::{
-    Inventory, NetworkId, NetworkTopologyOperation, PifIdentity, PoolId, ResourceAction,
-    ResourceTarget, ReviewedVlan, VlanUplink,
+    Inventory, NetworkId, NetworkTopologyOperation, PoolId, ResourceAction, ResourceTarget,
+    ReviewedVlan, VlanUplink,
 };
 
 use crate::areas::network::{Check, Workspace, name, pif_name};
@@ -24,9 +24,17 @@ pub struct Editor {
     pub selection: Selection,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Create,
+    Retag,
+    Delete,
+}
+
 pub enum Selection {
     Create(Vec<VlanUplink>),
     Retag(Vec<ReviewedVlan>),
+    Delete(Vec<ReviewedVlan>),
 }
 
 /// The staleness rule of a topology review, also of the pool-wide fabric
@@ -42,7 +50,11 @@ pub const CHECK: Check = Check {
 pub const NO_UPLINK: &str =
     "Choose an uplink network with exactly one managed untagged interface on every pool host";
 
-pub fn uplinks(i: &Inventory, source: NetworkId) -> Result<Vec<VlanUplink>, String> {
+pub fn uplinks(
+    i: &Inventory,
+    source: NetworkId,
+    target: NetworkId,
+) -> Result<Vec<VlanUplink>, String> {
     i.hosts
         .keys()
         .map(|host| {
@@ -60,10 +72,7 @@ pub fn uplinks(i: &Inventory, source: NetworkId) -> Result<Vec<VlanUplink>, Stri
             let [p] = candidates.as_slice() else {
                 return Err(NO_UPLINK.into());
             };
-            Ok(VlanUplink {
-                pif: p.id,
-                expected: PifIdentity::from_inventory(p).ok_or("Uplink identity is incomplete")?,
-            })
+            VlanUplink::capture(i, p.id, target).map_err(|e| e.to_string())
         })
         .collect()
 }
@@ -92,11 +101,7 @@ pub fn retag(i: &Inventory, network: NetworkId) -> Result<Vec<ReviewedVlan>, Str
             Ok(ReviewedVlan {
                 vlan: v.id,
                 child: p.id,
-                uplink: VlanUplink {
-                    pif: parent.id,
-                    expected: PifIdentity::from_inventory(parent)
-                        .ok_or("Uplink identity is incomplete")?,
-                },
+                uplink: VlanUplink::capture(i, parent.id, network).map_err(|e| e.to_string())?,
                 tag: v
                     .tag
                     .and_then(|v| u16::try_from(v).ok())
@@ -110,16 +115,16 @@ pub fn retag(i: &Inventory, network: NetworkId) -> Result<Vec<ReviewedVlan>, Str
 }
 
 /// The draft a command opens (the Rune `open`): the tag "100", and for a
-/// retag the VLAN interfaces of the network as they are now. `Err`: why
-/// the network cannot be retagged, whatever is entered.
-pub fn capture(i: &Inventory, network: NetworkId, changing: bool) -> Result<Editor, String> {
+/// retag or removal the VLAN interfaces of the network as they are now.
+/// `Err`: why the network cannot be retagged or removed, whatever is entered.
+pub fn capture(i: &Inventory, network: NetworkId, mode: Mode) -> Result<Editor, String> {
     Ok(Editor {
         network,
         tag: "100".into(),
-        selection: if changing {
-            Selection::Retag(retag(i, network)?)
-        } else {
-            Selection::Create(vec![])
+        selection: match mode {
+            Mode::Create => Selection::Create(vec![]),
+            Mode::Retag => Selection::Retag(retag(i, network)?),
+            Mode::Delete => Selection::Delete(retag(i, network)?),
         },
     })
 }
@@ -135,11 +140,16 @@ pub fn sources(i: &Inventory, network: NetworkId) -> Vec<(NetworkId, Vec<VlanUpl
         .filter(|n| *n != network)
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter_map(|source| Some((source, uplinks(i, source).ok()?)))
+        .filter_map(|source| Some((source, uplinks(i, source, network).ok()?)))
         .collect()
 }
 
 pub fn operation(editor: &Editor) -> Result<NetworkTopologyOperation, String> {
+    if let Selection::Delete(interfaces) = &editor.selection {
+        return Ok(NetworkTopologyOperation::DeleteVlans {
+            interfaces: interfaces.clone(),
+        });
+    }
     let tag = editor
         .tag
         .trim()
@@ -156,6 +166,7 @@ pub fn operation(editor: &Editor) -> Result<NetworkTopologyOperation, String> {
             interfaces: interfaces.clone(),
             tag,
         },
+        Selection::Delete(_) => unreachable!(),
     })
 }
 
@@ -177,6 +188,12 @@ pub fn review(
         ),
         "Every pool host must be online. Interfaces are changed one host at a time. A failure can leave a partially changed network; verified identities remain on the Events tab of the Notifications view.".into(),
     ];
+    if matches!(editor.selection, Selection::Delete(_)) {
+        lines[1] = format!(
+            "Remove reviewed VLANs from all {} pool hosts",
+            i.hosts.len()
+        );
+    }
     match &editor.selection {
         Selection::Create(uplinks) => {
             lines.push("Create and plug a new VLAN interface on each reviewed uplink. Tag 0 requests the API's native VLAN.".into());
@@ -186,6 +203,15 @@ pub fn review(
                     pif_name(i, p.pif),
                     p.expected.host,
                     p.pif
+                ));
+            }
+        }
+        Selection::Delete(interfaces) => {
+            lines.push("Remove exactly the reviewed VLAN interfaces. The network, logical SR-IOV interfaces and physical NICs remain. No driver activation request is submitted by deletion.".into());
+            for v in interfaces {
+                lines.push(format!(
+                    "Host {} · VLAN {} / interface {} · tag {}",
+                    v.uplink.expected.host, v.vlan, v.child, v.tag
                 ));
             }
         }
@@ -209,6 +235,36 @@ pub fn review(
                 ));
             }
         }
+    }
+    let uplinks = match &editor.selection {
+        Selection::Create(v) => v.iter().collect::<Vec<_>>(),
+        Selection::Retag(v) | Selection::Delete(v) => v.iter().map(|v| &v.uplink).collect(),
+    };
+    if !matches!(editor.selection, Selection::Delete(_))
+        && uplinks.iter().any(|p| p.sriov.is_some())
+    {
+        lines.insert(
+            2,
+            "Creating or reattaching a VLAN re-applies its SR-IOV parent configuration. Affected hosts must be disabled and evacuated with HA off. A new reboot requirement leaves a partial result; no reboot is automatic.".into(),
+        );
+    }
+    for p in uplinks.into_iter().filter_map(|p| p.sriov.as_ref()) {
+        if let (Some(logical), Some(hardware)) = (p.object.logical, p.fabric.hardware.as_ref()) {
+            lines.push(format!(
+                "SR-IOV logical interface {} · object {} · physical interface {} · PCI {}",
+                logical, p.object.id, p.fabric.input.id, hardware.id
+            ));
+        }
+        for physical in p.fabric.driver_interfaces.values() {
+            lines.push(format!(
+                "Same-driver interface: {} · {} · MAC {}",
+                physical.device, physical.id, physical.mac
+            ));
+        }
+        lines.push(format!(
+            "{} other VLAN interfaces are retained with their captured identities and configuration",
+            p.preserved.len()
+        ));
     }
     lines.push("A lost reply stops the workflow. Recheck inspects existing receipts; it never repeats a request or starts remaining host steps.".into());
     Ok((operation, lines))

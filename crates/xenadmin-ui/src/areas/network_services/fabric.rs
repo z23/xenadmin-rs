@@ -181,7 +181,7 @@ fn sriov_mode(value: Option<SriovConfigurationMode>) -> &'static str {
     }
 }
 
-fn flag(value: Option<bool>) -> &'static str {
+pub(super) fn flag(value: Option<bool>) -> &'static str {
     match value {
         Some(true) => "yes",
         Some(false) => "no",
@@ -382,9 +382,23 @@ pub const NOTHING_TO_REMOVE: &str =
 
 /// The Rune `fabric::view` without its buttons: what coverage means, the
 /// availability of the four classes it is read from, and per host the
-/// records of its interfaces on the network. Information: for the
-/// Networking tab of a network; the wizards show it on their Name step.
+/// records of its interfaces on the network. Information: for the wizards'
+/// Name step.
 pub fn coverage(i: &Inventory, network: NetworkId) -> Vec<Block> {
+    coverage_blocks(None, i, network)
+}
+
+/// The same coverage view for the Networking tab of a network, including the
+/// read-only SR-IOV remaining VF capacity controls.
+pub fn coverage_for_tab(m: &Model, pool: PoolId, i: &Inventory, network: NetworkId) -> Vec<Block> {
+    coverage_blocks(Some((m, pool)), i, network)
+}
+
+fn coverage_blocks(
+    tab: Option<(&Model, PoolId)>,
+    i: &Inventory,
+    network: NetworkId,
+) -> Vec<Block> {
     let mut body = blocks![
         heading("Tunnel and SR-IOV coverage"),
         caption(
@@ -429,6 +443,9 @@ pub fn coverage(i: &Inventory, network: NetworkId) -> Vec<Block> {
             for record in records.iter().filter(|record| record.pif == p.id) {
                 found = true;
                 body.push(caption(record.line.clone()).into());
+                if let (Some((m, pool)), Object::Sriov(id)) = (tab, record.object) {
+                    body.extend(super::capacity::view(m, pool, id));
+                }
                 if let Some(Err(error)) = &record.removal {
                     body.push(caption(removal_unavailable(error)).into());
                 }

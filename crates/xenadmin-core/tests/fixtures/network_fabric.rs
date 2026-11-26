@@ -1,3 +1,5 @@
+#[path = "sriov_capacity.rs"]
+mod capacity;
 #[path = "network_fabric_pool.rs"]
 mod pool;
 use super::*;
@@ -98,6 +100,9 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
             let method = request["method"].as_str().unwrap();
             let pool_fixture = records.lock().unwrap().contains_key("_pool");
             if pool_fixture && let Some(reply) = pool::request(&records, &writes, &request).await {
+                return Some(reply);
+            }
+            if let Some(reply) = capacity::request(&records, &request).await {
                 return Some(reply);
             }
             if method == "event.from" && request["params"][2] == "" {
