@@ -33,20 +33,19 @@ tree after the front end moved to GPUI Kit, which no person has yet used in a wi
 
 ## Project status
 
-Beta. Version 0.19.0 is the current release
-([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.19.0),
-[changelog](CHANGELOG.md), [release report](docs/reports/2026-11-12-release-0.19.md)), for
+Beta. Version 0.21.0 is the current release, published as a pre-release on 2026-11-27
+([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.21.0),
+[changelog](CHANGELOG.md)), for
 XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
 connections and certificate trust, the live inventory, VM power, the console, snapshots,
-performance charts and activity; on the main branch, towards 0.20.0, host maintenance
-and moving a VM within its pool have joined it. Everything else below is experimental: implemented, in
+performance charts, activity, host maintenance and moving a VM within its pool. Everything else below is experimental: implemented, in
 most cases with one recorded successful run, and marked with a notice in the client. The
 [feature scope](docs/FEATURES.md) draws that line. The Cargo workspace builds the desktop
 application, a read-only host probe and a small sandbox helper. No Xen Orchestra
 service is used.
 
-The main branch differs from 0.19.0 in its whole front end. The released versions were
-built with the Rune toolkit; the main branch is built with GPUI Kit, with a new layout
+0.21.0 differs from 0.19.0 in its whole front end. The versions up to 0.19.0 were
+built with the Rune toolkit; 0.21.0 and the main branch are built with GPUI Kit, with a new layout
 (a menu bar and toolbar, navigation views, tabs per object, Properties dialogs and
 wizards), by the [migration plan](docs/GPUI-MIGRATION.md), whose "Status" section says
 what is established. In short: every area of the old interface is ported; the model's
@@ -164,7 +163,8 @@ Xen Orchestra was shut down and unreachable; the VM was found with the search bo
 started, and typed into at its login prompt; the client's connections went to the pool's
 coordinator only; XO answered again afterwards
 ([report](docs/reports/2026-11-19-gpui-vm-session.md), section E). It has not been
-repeated by a person at a desk, nor on the draft packages of tag `v0.20.0`, nor with the
+repeated by a person at a desk, nor on the draft packages of tag `v0.20.0`, nor on the
+published packages of 0.21.0, nor with the
 package CI built of the merged tree on 2026-11-20 (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
 
 ## Release history
@@ -173,6 +173,21 @@ package CI built of the merged tree on 2026-11-20 (gates G3 and G5 of the [migra
 packages on the project's releases page and their notes in the [changelog](CHANGELOG.md).
 0.20.0 is tagged and its archive and AppImage are on a draft pre-release. That draft is
 not published, and the recovery gate has not been run on those packages.
+0.21.0 is the third published version, tag `v0.21.0` at commit `38211e1`, published as a
+pre-release on 2026-11-27. It holds everything of 0.20.0 and what was merged after that
+tag. Its packages were built by the tag's workflow
+([run 45953044325](https://github.com/z23/xenadmin-rs/actions/runs/45953044325)), which
+repeated the repository's checks on the tagged commit. Before publication both packages
+were downloaded from the draft and matched their checksum files, and the archive's
+client answered `--version` with `xenadmin-rs 0.21.0`. Nothing else was done with them:
+they were not installed on a clean system, no window was opened, and the recovery gate
+has not been run on them.
+
+| Package | SHA-256 |
+| --- | --- |
+| `xenadmin-rs-0.21.0-linux-x86_64.tar.gz` (47,075,308 bytes) | `40660eecf6f3f335fdce33793875e4aa8081f747f14f2ff6f27f374fd6db66f5` |
+| `xenadmin-rs-0.21.0-linux-x86_64.AppImage` (47,708,664 bytes) | `984432dc08b4c369b9819a75be57e37b0a816a71b206a74b754a0dec6a004b48` |
+
 The versions before them were development checkpoints that froze source locally and
 recorded their verification:
 
