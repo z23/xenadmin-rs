@@ -8,6 +8,122 @@ authority on what is implemented and what is qualified.
 0.18.0 is the first published version. Versions up to 0.17.0 were local development
 checkpoints.
 
+## 0.21.0 (2026-11-27)
+
+The third published version, a beta for XCP-ng 8.3, marked as a pre-release. 0.20.0 was
+tagged on 2026-11-21 and its packages stayed on a draft that was not published, so for
+someone coming from 0.19.0 everything in the
+[0.20.0 entry](CHANGELOG.md#0200-2026-11-21) is new in this version as well, with its
+known issues: the GPUI Kit interface that replaces the Rune one, host maintenance and
+moving a VM within its pool in the supported part, and the batches of snapshot exports
+and of cross-pool moves. This entry lists what changed since that tag. The supported part
+is the one 0.20.0 describes ([feature scope](docs/FEATURES.md)); everything added here is
+experimental.
+
+The packages are a portable archive and an AppImage for x86-64 Linux, each with its
+SHA-256 checksum; [installation](docs/INSTALLATION.md) says how to check and install
+them. This is an independent project, not an official XCP-ng or Vates application.
+
+Stored formats: operation journal 5, connection profiles 3. Unchanged from the tag
+`v0.20.0`; from 0.19.0 the journal format changes as the 0.20.0 entry says, and 0.19.0
+cannot submit changes from a state directory this version has used. A journal may now
+also hold a removal of pool-wide VLANs and storage operations of the SMB virtual-disk
+and local XFS backends, which a build of `v0.20.0` cannot read. The number is not raised
+for that, because no published version reads format 5.
+
+### Added
+
+- Storage: two more backends in the New Storage wizard, both experimental and verified on
+  fixtures only; neither has been created, probed or introduced on a host
+  ([ledger](docs/PARITY-IMPLEMENTATION.md), rows P09-02 to P09-05 and P09-15).
+  - "SMB 3.0 virtual disks" creates, discovers and introduces a shared repository of
+    virtual disks on an SMB share, with optional authentication. The credentials are used
+    for the operation and are not written to the journal. There is no fallback to SMB1.
+  - "Local XFS" creates and introduces a local repository on a device path the operator
+    declares, beside Local EXT and Local LVM, with the same data-loss confirmation. The
+    probe of a device asks the XFS driver where the host lists it. A host whose XFS
+    driver cannot load, as one without xfsprogs, is taken to have nothing further to
+    report, and Local EXT and Local LVM work there as before; creating an XFS repository
+    on such a host is refused with the host's own error. What the driver answers without
+    xfsprogs was read from the upstream storage manager's source, not seen on a host.
+  - EXT and XFS probes look at the same volume-group prefix and cannot tell which
+    filesystem a repository has. The operator therefore confirms the driver before every
+    local introduction. Where one driver reported the repository the form takes it;
+    where EXT and XFS both did it chooses neither; and a review with a driver whose
+    probe did not report the repository is refused.
+- Networks, SR-IOV, experimental and verified on fixtures only: no SR-IOV hardware has
+  been used ([ledger](docs/PARITY-IMPLEMENTATION.md), row P10-11).
+  - "Refresh VF capacity" on a network's Networking tab reads how many virtual functions
+    an SR-IOV network has left. It changes nothing and needs no maintenance state.
+  - Pool-wide VLANs can be created and retagged on an SR-IOV logical interface. The
+    review then states the impact on the parent's driver, and requires the hosts disabled
+    and evacuated, pool HA off, and every interface of the same driver on the host free
+    of management, IP addresses, VMs and other topology. It therefore does not apply
+    where the management interface shares the driver.
+  - "Remove Pool-wide VLANs" removes the VLAN interfaces of a network from every host in
+    one reviewed operation, with the per-host steps, the partial results and the recovery
+    without replay of the creation and the retagging. It is disabled, with the reason, on
+    a network that has no interface.
+  - Plugging or unplugging an SR-IOV interface or a VLAN on one, and creating a VLAN on a
+    logical interface of a single host, are now refused, because those forms have no
+    review of the driver impact. The message names the pool-wide review.
+  - The pool-wide VLAN form names an uplink network that cannot be chosen yet and says
+    why, for example an SR-IOV network whose hosts are not disabled and evacuated.
+
+### Changed
+
+- Large pools: an event batch from a host now updates the parts of the inventory it
+  touches where the whole inventory was decoded again, the navigation tree is rebuilt
+  only when its rows change, and search allocates less for each object it rejects. This
+  was measured in release builds on generated inventories, not on a pool: with 16 hosts
+  and 500 VMs, applying a change to one task or one VM took about 0.8 ms where decoding
+  everything took 6.4 ms. The incremental result is compared with a full decode in the
+  tests. A batch that touches more than 1,024 VM and disk records, and any batch that
+  holds an event the client cannot read, is decoded in full.
+- Console: the client no longer asks the host for a refresh every 33 ms. It waits for
+  the host's updates, asks again when a picture has been completed, at most once in 33
+  ms, and repeats the request after five seconds without an answer, so that a
+  connection that has gone away is still noticed. Input, resizing and closing no longer
+  wait behind incoming updates, and pixels that did not change are not written again.
+  This was run against fixture servers only, not against a host, and not in a window.
+- A pool-wide VLAN removal is no longer refused because the network's MTU does not fit
+  its uplinks. That rule is what a new VLAN interface needs and now applies to creation
+  and retagging only.
+- Opening the operation journal takes no process-wide lock when the journal already has
+  the current format.
+- The socket through which a second start reaches the running client now appears with
+  its permissions already set; it was created first and restricted afterwards.
+
+### Fixed
+
+- Enabling or removing SR-IOV on one host, creating or removing a tunnel on one host,
+  and a pool-wide VLAN change on an SR-IOV logical interface were refused before their
+  first write on any host that reports its interfaces as XAPI's source says every host
+  does: with a metrics record linked, and with the receive-offload property `gro` among
+  the interface's properties. The review compared the first and took the second for
+  somebody's configuration. Both are now accepted; any other property, and any
+  `other_config`, is refused as before. The fixtures had neither, and no host with
+  SR-IOV hardware has been used.
+- The result of a pool-wide VLAN step whose check was interrupted could not be checked
+  once the host was back in service, because the recheck asked for the maintenance state
+  a write needs, and the outcome stayed unknown. A result is now checked against what
+  the review said of the parent interface. Every write is still preceded by the full
+  check.
+
+### Known issues
+
+The known issues of the [0.20.0 entry](CHANGELOG.md#0200-2026-11-21) all stand. In
+addition:
+
+- Nothing in this entry was run against a host or in a window. The storage and SR-IOV
+  workflows, the incremental inventory and the console's pacing are verified by fixtures,
+  by tests on the headless platform and by scene renders. The lab scenarios were not run
+  again on this code.
+- The recovery gate (find the Xen Orchestra VM, start it and use its console with Xen
+  Orchestra down) has not been run on the packages of this version, nor on those of the
+  `v0.20.0` draft. It was last run with the AppImage CI built at commit `e808a2f`, in a
+  virtual machine with injected input.
+
 ## 0.20.0 (2026-11-21)
 
 Stored formats: operation journal 5, connection profiles 3. The journal format changes
